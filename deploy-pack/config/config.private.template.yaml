@@ -1,0 +1,108 @@
+# ============================================================
+# Hermes 私有部署配置覆盖模板（E1′ 装配包）
+# 用法：把需要的段落合并进本机 ~/.hermes/config.yaml（先 `hermes config path`
+# 确认路径），或用 `hermes config set <点号键> <值>` 逐项写入。
+# 本文件不是完整 config.yaml —— Hermes 有完整出厂默认（hermes_cli/
+# config_defaults.py 的 DEFAULT_CONFIG），这里只写个人部署要覆盖的项。
+# 每项注释格式：键在代码中的位置 T0/T1/T2/T3 怎么调。
+# 密钥永远不写进本文件：API Key 只进 ~/.hermes/.env（见 README 第 2 步）。
+# ============================================================
+
+# ---------- 主脑 ----------
+# cli-config.yaml.example:72-112（model 段）；hermes_cli/models.py
+# _get_model_config_dict() 读取 config.yaml 的 model 映射。
+# 复刻体验的第一变量是主脑档次：主脑用你能稳定付费的最强模型，
+# 杂活交给下面的 auxiliary 便宜模型分工，不要反过来省主脑的钱。
+# 与机器档位无关，四档同配；T0 机器也不要因此降主脑（推理在云端）。
+model:
+default: "" # ← 部署者填，如 "anthropic/claude-opus-4.6"（示例值出自 cli-config.yaml.example:75）
+provider: "auto" # "auto" = 按凭据自动探测；也可写死 provider 名，如 "openrouter"
+
+# ---------- 主脑降级链 ----------
+# hermes_cli/config_defaults.py:36 "fallback_providers"；
+# hermes_cli/fallback_config.py（条目须同时有 provider + model 才有效；
+# 也可用 `hermes fallback list|add|remove|clear` 管理，同一真源）。
+# 主脑限流/宕机时整条值班链会哑火；配一条跨厂商备用链，
+# 值班 job 才不会因为单点故障整夜失联。
+# 四档同配。示例结构（把 model 换成你实际有 Key 的备用模型）：
+fallback_providers:
+- provider: "openrouter"
+model: "" # ← 部署者填备用模型，如 "google/gemini-3-flash-preview"
+# - provider: "deepseek"
+# model: "" # 可继续追加，顺序即优先级
+
+# ---------- 辅助模型分工（auxiliary） ----------
+# hermes_cli/config_defaults.py "auxiliary" 段（约 765-842 行）；
+# 每任务一块 {provider, model, base_url, api_key, timeout, extra_body,
+# reasoning_effort}；provider "auto" + model "" = 继承主模型。
+# 代码注释明确：approval 分类器 "a fast/cheap model is recommended"；
+# 仓库自身在 aux 不可用时的兜底是 openrouter:google/gemini-3-flash-preview。
+# 压缩、审批分类、记忆复盘、会话标题这类高频杂活不需要主脑，
+# 指派便宜快模型能显著降本且不伤体验；主脑只干正事。
+# T0/T1 建议全部分工（省钱）；T2/T3 可只分工 compression 与
+# background_review 两项大头，其余继承主脑。
+auxiliary:
+compression: # 会话压缩摘要，长会话高频触发
+provider: "auto"
+model: "" # ← 填便宜快模型（与主脑同 provider 亦可）
+approval: # smart 审批的分类器，只要快
+provider: "auto"
+model: "" # ← 填便宜快模型
+background_review: # 每 10 轮 nudge 的记忆/技能复盘 fork（memory.nudge_interval）
+provider: "auto"
+model: "" # ← 填便宜模型；代码注释：换模型走紧凑摘要回放，约便宜 3-5 倍
+curator: # 技能生命周期整理，低频但可跑数分钟
+provider: "auto"
+model: "" # ← 填便宜模型
+title_generation: # 会话标题，纯杂活
+provider: "auto"
+model: "" # ← 填最便宜的即可
+
+# ---------- 代理行为 ----------
+agent:
+# hermes_cli/config_defaults.py:91 "agent.max_turns"（默认 null=无上限，
+# 注释明确点名无上限曾导致成本失控风险；resolve_turn_limit 解析）。
+# 无人值守的值班 job 若陷入循环，无上限 = 无止境烧钱。
+# 给主代理一个有限天花板，值班 job 另有 cron 侧看门狗兜底。
+# T0: 60；T1: 90；T2/T3: 120。长任务被截断时手动调高单次会话即可。
+max_turns: 90
+# hermes_cli/config_defaults.py:234 "agent.verify_on_stop"；
+# agent/verification_stop.py verify_on_stop_enabled()（env HERMES_VERIFY_ON_STOP
+# 优先于本键）。
+# 停轮前自检：agent 声称"做完了"之前被框架推一把去核验证据，
+# 是求真剂量里少数有机制托底的一项，出厂默认关，个人部署打开。
+# 四档同开。
+verify_on_stop: true
+# hermes_cli/config_defaults.py "agent.budget_warning_ratio"
+# （0-1 之间，接近轮次上限时给模型一次收尾警告）。
+# 与 max_turns 配套，避免活干一半被硬截断。
+budget_warning_ratio: 0.75
+
+# ---------- 审批 ----------
+# hermes_cli/config_defaults.py "approvals" 段（约 1692-1735 行），
+# mode 默认 "smart"；合法值见 hermes_cli/approval_mode.py:16
+# VALID_APPROVAL_MODES = ("manual", "smart", "off")。
+# 2026-10-22 已拍板：个人部署用 manual（每个危险动作都过目），
+# 公开仓出厂保持 smart 不动。注意：approvals.cron_mode /
+# unattended_mode / single_query_mode 是独立的二值键（deny/approve，
+# 出厂 deny），管的是无人场景，个人部署保持 deny 不动——值班 job 遇到
+# 危险命令被拒是正确行为，应改 job 内容而不是放开这里。
+# 四档同配 manual。
+approvals:
+mode: "manual"
+
+# ---------- 记忆 ----------
+# hermes_cli/config_defaults.py "memory" 段（约 1338-1352 行）：
+# write_approval:1345、memory_char_limit:1346（出厂 4400）、
+# user_char_limit:1347（出厂 2200）、nudge_interval:1349（默认 10）。
+# 4400/2200 是给公开仓的稳妥出厂值；个人长期部署必然撞墙
+# （超限写入被拒），按方案 M1/M5 放宽上限并打开写入审批：
+# 前台写入当场过目，后台复盘 fork 的写入先进待批
+# （/memory pending | approve <id> | reject <id>），观察一两周再决定是否关。
+# T0: 4400/2200（机器小、上下文预算紧）；T1: 8000/3000；
+# T2/T3: 8000/3000 起步，记忆整理 job（M3）跑顺后可再放宽到 12000/4000。
+memory:
+memory_char_limit: 8000
+user_char_limit: 3000
+write_approval: true
+# nudge_interval 保持出厂 10 即可；设 0 是关掉周期复盘，别关。
