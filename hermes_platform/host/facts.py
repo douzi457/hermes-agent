@@ -412,6 +412,21 @@ def parse_vram_total(text: str) -> int | None:
     return value if value > 0 else None
 
 
+def parse_nvidia_smi_vram_total(text: str) -> int | None:
+    """Largest per-GPU total in ``nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits``
+    output: one MiB value per GPU line. Pure function of the text — running the tool is the
+    caller's business (this package never spawns). ``None`` when no line parses."""
+    totals = []
+    for line in text.splitlines():
+        try:
+            mib = int(line.strip())
+        except ValueError:
+            continue  # "N/A" and other non-numeric rows carry no measurement
+        if mib > 0:
+            totals.append(mib << 20)
+    return max(totals) if totals else None
+
+
 def _linux_gpu_vram_bytes() -> int | None:
     """Largest per-card VRAM from amdgpu sysfs; NVIDIA exposes no sysfs total, so ``None`` there."""
     root = "/sys/class/drm"
