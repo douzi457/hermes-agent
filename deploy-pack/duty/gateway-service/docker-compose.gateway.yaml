@@ -1,0 +1,27 @@
+# Hermes gateway 常驻 · Docker Compose 片段
+#
+# 这是片段不是完整 compose：仓库自带 docker-compose.yml / Dockerfile，
+# 镜像名、构建方式以仓库根目录的 docker-compose.yml 为准，把下面的
+# gateway 服务块合并进去（或单独存为 docker-compose.gateway.yaml 与主文件
+# 用 -f 叠加）。`hermes gateway run` 的子命令帮助原文即
+# "Run gateway in foreground (recommended for WSL and Docker)"。
+
+services:
+  gateway:
+    # image 与 build 二选一，以仓库 docker-compose.yml 现有定义为准：
+    # image: hermes-agent:local
+    # build: .
+    command: ["hermes", "gateway", "run", "--replace"]
+    restart: unless-stopped        # D1 常驻的根：容器退出自动拉起
+    environment:
+      - HERMES_HOME=/root/.hermes  # 与下面 volume 的容器内路径保持一致
+    volumes:
+      - hermes-home:/root/.hermes  # config/.env/memories/state.db/cron 全在这里，必须持久化
+    # 消息渠道多为出站连接，通常不需要 ports；dashboard 等入站服务按需再开，
+    # 不要为了省事全量映射端口。
+
+volumes:
+  hermes-home:
+
+# 验证：docker compose up -d gateway && docker compose logs -f gateway
+#       容器内或经同一 HERMES_HOME 执行 hermes gateway status / hermes cron status

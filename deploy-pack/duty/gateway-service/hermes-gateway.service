@@ -1,0 +1,35 @@
+# Hermes gateway 常驻 · systemd user unit 模板（手动方案）
+#
+# 首选方案不是本文件：仓库自带 `hermes gateway install`
+# （hermes_cli/subcommands/gateway.py：Install gateway as a systemd/launchd
+# background service；默认 profile 的 unit 名为 hermes-gateway，
+# 见 hermes_cli/gateway.py get_service_name()）。先跑官方 install，
+# 只有在需要完全自定义 unit 时才用本模板，二者不要同时启用（双 dispatcher
+# 会抢同一 profile 的状态，`gateway run` 在有服务监督时默认拒绝启动正是为此）。
+#
+# 部署：
+#   1) 把 __HERMES_BIN__ 换成 `command -v hermes` 的输出（绝对路径）。
+#   2) 保存为 ~/.config/systemd/user/hermes-gateway.service
+#   3) systemctl --user daemon-reload && systemctl --user enable --now hermes-gateway
+#   4) 服务器无桌面会话时另需 loginctl enable-linger <用户>，否则登出即停
+#      （仓库在 hermes_cli/gateway.py 里对 linger 关闭的会话有专门报错提示）。
+#   5) 验证：systemctl --user status hermes-gateway；hermes gateway status
+
+[Unit]
+Description=Hermes messaging gateway (duty base, E1' pack)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# gateway run = 前台运行（子命令帮助原文：Run gateway in foreground，
+# recommended for WSL and Docker）；--replace 供 systemd 接管旧实例。
+ExecStart=__HERMES_BIN__ gateway run --replace
+Environment=HERMES_HOME=%h/.hermes
+Restart=always
+RestartSec=10
+# 无人值守审批在 config 里保持 deny（approvals.cron_mode 等），
+# 不要在本 unit 里用环境变量绕过审批。
+
+[Install]
+WantedBy=default.target
