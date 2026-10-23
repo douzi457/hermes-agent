@@ -90,7 +90,7 @@ def read_config_limits(home: Path) -> dict[str, int]:
     except OSError:
         return limits
     for key, fname in (("memory_char_limit", "MEMORY.md"), ("user_char_limit", "USER.md")):
-        m = re.search(rf"^\s*{key}\s*:\s*(\d+)", text, flags=re.M)
+        m = re.search(rf"^\s*{key}\s*:\s*(\d+)", text, flags=re.MULTILINE)
         if m:
             limits[fname] = int(m.group(1))
     return limits
