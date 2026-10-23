@@ -1028,6 +1028,14 @@ def _embedder_environment_hint() -> str:
         (_config_readonly("agent.environment_hint").get("agent", {}) or {}).get("environment_hint", "")).strip()
 
 
+def _machine_profile_hint() -> str:
+    """Stored machine-profile summary (``machine.summary`` in config.yaml), or "" when the
+    machine was never probed. Read at prompt-build time like the embedder hint, so the line
+    is stable for the life of a conversation."""
+    machine = (_config_readonly("machine profile").get("machine", {}) or {})
+    return str(machine.get("summary", "") or "").strip() if isinstance(machine, dict) else ""
+
+
 def build_environment_hints() -> str:
     """Execution-environment block: local backends get host OS/home/cwd; remote/sandbox
     backends get ONLY the backend's own state (the agent's tools cannot touch the host).
@@ -1040,6 +1048,10 @@ def build_environment_hints() -> str:
     if not is_remote_backend:
         hints.append(_bot_screen_hint())
     hints += [WSL_ENVIRONMENT_HINT] if is_wsl() else []
+    # The machine profile describes the Hermes host itself, so it rides along for every
+    # backend (a remote backend's own probe failure text says its facts are unknown — the
+    # host's graded tier is still true and useful there).
+    hints.append(_machine_profile_hint())
     return "\n\n".join(h for h in (*hints, _embedder_environment_hint()) if h)
 
 

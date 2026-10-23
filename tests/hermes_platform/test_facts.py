@@ -117,3 +117,18 @@ def test_linux_live_cpu_facts_match_cpuinfo(cleared_fact_caches) -> None:
 
     assert facts.cpu_vendor() == facts.parse_cpuinfo_vendor(cpuinfo)
     assert facts.cpu_model() in cpuinfo
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("17179869184", 17179869184), ("  8589934592 \n", 8589934592),
+    ("", None), ("not-a-number", None), ("0", None), ("-5", None),
+])
+def test_parse_vram_total(text: str, expected: int | None) -> None:
+    assert facts.parse_vram_total(text) == expected
+
+
+def test_live_cpu_count_and_gpu_vram_are_measured_or_none(cleared_fact_caches) -> None:
+    cores = facts.cpu_count()
+    assert cores is None or cores >= 1
+    vram = facts.gpu_vram_bytes()
+    assert vram is None or vram > 0

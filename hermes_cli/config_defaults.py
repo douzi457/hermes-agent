@@ -50,6 +50,19 @@ DEFAULT_CONFIG = {
     },
     # Soft fd limit for long-running server processes; clamped to OS hard limit. 0/false/null = off.
     "runtime": {"nofile_soft_limit": 4096},
+    # Machine profile: the probed hardware tier of the machine running Hermes, written by
+    # hermes_cli/machine_profile.py (probe via `hermes doctor --fix`). Empty tier = never probed.
+    # Readers: machine_profile.load_machine_profile (doctor display + re-probe), and
+    # agent/prompt_builder.py, which injects `summary` into the system prompt.
+    "machine": {
+        "tier": "",            # "T0" | "T1" | "T2" | "T3" ("" = not probed yet)
+        "probed_at": "",       # ISO-8601 timestamp of the last probe
+        "cpu_cores": None,     # logical CPUs seen by the OS
+        "ram_mb": None,        # physical memory visible to the OS
+        "disk_free_gb": None,  # free space on the HERMES_HOME volume at probe time
+        "gpu": "",             # e.g. "nvidia · 8192 MB VRAM" or "none"
+        "summary": "",         # one-line summary injected into the system prompt
+    },
     # Global active chat session cap across CLI, TUI/dashboard, and messaging. None/0 = unbounded.
     "max_concurrent_sessions": None,
     # Soft LRU cap on in-memory TUI/desktop/dashboard sessions. Above it the gateway evicts the
