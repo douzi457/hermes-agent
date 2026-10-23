@@ -232,6 +232,15 @@ def _windows_ram_total() -> int | None:
 
 
 @functools.cache
+def cpu_count() -> int | None:
+    """Return the logical CPU count visible to this OS, or ``None`` when unavailable."""
+    try:
+        return os.cpu_count()
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+@functools.cache
 def ram_total_bytes() -> int | None:
     """Return the physical memory visible to this OS, or ``None`` when unavailable."""
     try:
@@ -394,6 +403,48 @@ def nvidia_gpus() -> tuple[NvidiaGpu, ...]:
     return _linux_nvidia_gpus() if sys.platform.startswith("linux") else ()
 
 
+def parse_vram_total(text: str) -> int | None:
+    """Return a sysfs ``mem_info_vram_total`` value in bytes, or ``None`` when unparseable."""
+    try:
+        value = int(text.strip())
+    except (AttributeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _linux_gpu_vram_bytes() -> int | None:
+    """Largest per-card VRAM from amdgpu sysfs; NVIDIA exposes no sysfs total, so ``None`` there."""
+    root = "/sys/class/drm"
+    try:
+        cards = sorted(os.listdir(root))[:_GPU_SCAN_LIMIT * 4]
+    except OSError:
+        return None
+    totals = [parse_vram_total(_read_text(f"{root}/{card}/device/mem_info_vram_total", 64))
+              for card in cards if card.startswith("card") and "-" not in card]
+    measured = [total for total in totals if total is not None]
+    return max(measured) if measured else None
+
+
+@functools.cache
+def gpu_vram_bytes() -> int | None:
+    """Return the largest single GPU's dedicated VRAM in bytes, or ``None`` when unmeasured.
+
+    Windows reads DXGI dedicated memory; Linux reads amdgpu sysfs. Integrated GPUs and
+    Linux NVIDIA cards report ``None`` here — an unmeasured GPU is not a big GPU.
+    """
+    try:
+        if sys.platform == "win32":
+            from hermes_platform.host.gpu_adapters import windows_gpu_adapters
+
+            dedicated = [adapter.dedicated_bytes for adapter in windows_gpu_adapters() if not adapter.software]
+            return max(dedicated) if dedicated else None
+        if sys.platform.startswith("linux"):
+            return _linux_gpu_vram_bytes()
+    except (AttributeError, ImportError, OSError, TypeError, ValueError):
+        return None
+    return None
+
+
 def _windows_interactive_session() -> bool:
     import ctypes
     from ctypes import wintypes
@@ -424,6 +475,6 @@ def interactive_session() -> bool:
 
 def clear_caches() -> None:
     """Clear every cached host fact."""
-    for fact in (os_family, process_arch, native_arch, cpu_model, cpu_vendor, ram_total_bytes, gpu_class,
-                 nvidia_gpus, _windows_display_adapters):
+    for fact in (os_family, process_arch, native_arch, cpu_model, cpu_vendor, cpu_count, ram_total_bytes,
+                 gpu_class, gpu_vram_bytes, nvidia_gpus, _windows_display_adapters):
         fact.cache_clear()

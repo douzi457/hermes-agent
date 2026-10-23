@@ -656,3 +656,25 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
     if verb == "Created" and str(link_dir) not in os.environ.get("PATH", "").split(os.pathsep):
         check_warn(f"{display} is not on your PATH", "(add it to your shell config: export PATH=\"$HOME/.local/bin:$PATH\")")
         f.manual_issues.append(f"Add {display} to your PATH")
+
+
+@doctor_check()
+def _check_machine_profile(should_fix: bool, f: Finding) -> None:
+    """Stored machine profile (tier + key numbers); --fix probes and records one when missing."""
+    from hermes_cli.machine_profile import load_machine_profile, run_machine_probe
+
+    profile = load_machine_profile()
+    if not profile.get("tier"):
+        if not should_fix:
+            check_warn("Machine profile not probed yet", "(run 'hermes doctor --fix' to probe and record it)")
+            return
+        result = run_machine_probe()
+        profile = result["profile"]
+        f.fixed += 1
+        check_ok(f"Machine profile probed: {profile['summary']}")
+    else:
+        check_ok(profile.get("summary") or f"Machine tier {profile['tier']}",
+                 f"(probed {profile.get('probed_at') or 'unknown date'})")
+    if profile.get("disk_free_gb") is not None and profile["disk_free_gb"] < 5:
+        check_warn(f"Disk free is low: {profile['disk_free_gb']}G on the HERMES_HOME volume",
+                   "(dependencies and caches need room)")
