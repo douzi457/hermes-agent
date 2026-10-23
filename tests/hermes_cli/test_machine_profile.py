@@ -62,7 +62,8 @@ def test_probe_persists_profile_and_environment_md() -> None:
     facts = result["facts"]
     expected = classify_tier(cpu_cores=facts.cpu_cores, ram_bytes=facts.ram_bytes,
                              gpu_vram_bytes=facts.gpu_vram_bytes,
-                             disk_free_bytes=facts.disk_free_bytes)
+                             disk_free_bytes=facts.disk_free_bytes,
+                             os_family=facts.os_family, native_arch=facts.native_arch)
     assert profile["tier"] == expected.tier
     assert result["warnings"] == list(expected.warnings)
     assert stored["summary"] == format_summary(stored)
@@ -216,3 +217,47 @@ def test_probe_skips_fallback_when_sysfs_measured(monkeypatch) -> None:
     monkeypatch.setattr(mp, "_nvidia_smi_vram_bytes", _boom)
     result = run_machine_probe()
     assert result["profile"]["tier"] == "T3"
+
+
+# ---------------------------------------------------------------------------
+# Apple Silicon unified-memory approximation: no dedicated VRAM exists to
+# measure on a Mac, so a T2-grade darwin/arm64 machine with >= 16G total
+# memory grades T3 on unified memory; every other platform/shape is
+# untouched, and a measured VRAM verdict always wins over the approximation.
+# classify_tier takes the platform as data, so these run on any host.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("cores", "ram", "vram", "os_family", "arch", "expected"), [
+    (8, 16 * _GIB, None, "darwin", "arm64", "T3"),   # unified-memory floor met exactly
+    (8, 32 * _GIB, None, "darwin", "arm64", "T3"),
+    (4, 16 * _GIB, None, "darwin", "arm64", "T3"),   # T2 base floor met exactly
+    (8, 8 * _GIB, None, "darwin", "arm64", "T2"),    # 8G unified feeds OS + apps: no lift
+    (2, 16 * _GIB, None, "darwin", "arm64", "T1"),   # approximation never lifts a sub-T2 base
+    (8, 16 * _GIB, None, "darwin", "amd64", "T2"),   # Intel Mac: no approximation
+    (8, 16 * _GIB, None, "linux", "arm64", "T2"),    # Linux ARM: no approximation
+    (8, 16 * _GIB, 4 * _GIB, "darwin", "arm64", "T2"),  # measured VRAM verdict wins
+    (8, 16 * _GIB, 8 * _GIB, "darwin", "arm64", "T3"),  # measured VRAM still reaches T3
+])
+def test_classify_tier_apple_silicon_unified_memory(cores, ram, vram, os_family, arch, expected) -> None:
+    decision = classify_tier(cpu_cores=cores, ram_bytes=ram, gpu_vram_bytes=vram,
+                             os_family=os_family, native_arch=arch)
+    assert decision.tier == expected
+
+
+def _apple_silicon_facts(ram: int) -> mp.MachineFacts:
+    return mp.MachineFacts(
+        cpu_cores=8, cpu_model="Apple M-series", ram_bytes=ram, disk_free_bytes=100 * _GIB,
+        gpu_class="apple_silicon", gpu_name="", gpu_vram_bytes=None,
+        os_family="darwin", os_release="15.0", native_arch="arm64",
+        is_wsl=False, is_container=False)
+
+
+def test_apple_silicon_gpu_line_names_unified_memory_not_vram() -> None:
+    """The ENVIRONMENT.md GPU row must say 'unified memory (approximate)' —
+    never a fabricated VRAM figure."""
+    result = mp.build_profile(_apple_silicon_facts(16 * _GIB))
+    assert result["profile"]["tier"] == "T3"
+    assert "Apple Silicon 统一内存（近似判档）" in result["profile"]["gpu"]
+    assert "VRAM" not in result["profile"]["gpu"]
+    assert "Apple Silicon 统一内存（近似判档）" in mp.render_environment_md(result)

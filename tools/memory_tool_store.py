@@ -12,10 +12,19 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_cli.config_defaults import DEFAULT_CONFIG as _DEFAULT_CONFIG
 from utils import atomic_write_text
 from tools.threat_patterns import first_threat_message as _first_threat_message
 
 logger = logging.getLogger("tools.memory_tool")
+
+# Fallback char limits for a store built without a resolved config section.
+# Single source of truth: DEFAULT_CONFIG["memory"] — config_defaults is a
+# pure-data leaf module, so importing it here cannot cycle. Never restate the
+# numbers: a caller that bypasses the merged config defaults must still
+# enforce the shipped limits, not a stale second copy of them.
+DEFAULT_MEMORY_CHAR_LIMIT = _DEFAULT_CONFIG["memory"]["memory_char_limit"]
+DEFAULT_USER_CHAR_LIMIT = _DEFAULT_CONFIG["memory"]["user_char_limit"]
 
 # Block header prefixes rendered by _render_block; agent/conversation_compression.py
 # matches them to detect a leftover block for an emptied target — keep in lockstep.
@@ -183,7 +192,8 @@ class MemoryStore:
     # See #42405.
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375, *,
+    def __init__(self, memory_char_limit: int = DEFAULT_MEMORY_CHAR_LIMIT,
+                 user_char_limit: int = DEFAULT_USER_CHAR_LIMIT, *,
                  memory_enabled: bool = True, user_profile_enabled: bool = True):
         self.memory_entries: list[str] = []
         self.user_entries: list[str] = []

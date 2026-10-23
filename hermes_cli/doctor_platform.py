@@ -678,3 +678,34 @@ def _check_machine_profile(should_fix: bool, f: Finding) -> None:
     if profile.get("disk_free_gb") is not None and profile["disk_free_gb"] < 5:
         check_warn(f"Disk free is low: {profile['disk_free_gb']}G on the HERMES_HOME volume",
                    "(dependencies and caches need room)")
+
+
+@doctor_check()
+def _check_gateway_residency(should_fix: bool, f: Finding) -> None:
+    """Resident gateway: cron and duty jobs only fire while a gateway process lives.
+
+    Reads the same runtime snapshot `hermes gateway status` renders. --fix never
+    installs or starts a service (installing is a system change) — the remedy is
+    reported as a manual issue instead.
+    """
+    from hermes_cli.gateway import get_gateway_runtime_snapshot
+
+    snapshot = get_gateway_runtime_snapshot()
+    if snapshot.running:
+        detail = f"({snapshot.manager}"
+        if snapshot.gateway_pids:
+            detail += f", PID {', '.join(str(pid) for pid in snapshot.gateway_pids)}"
+        check_ok("Gateway is running", detail + ")")
+        if not snapshot.service_installed and (
+                snapshot.manager == "manual process" or snapshot.manager.startswith("Termux")):
+            check_warn("Gateway runs as a manual process, not an installed service",
+                       "(it stops with the session — 'hermes gateway install' makes it resident)")
+        return
+    if snapshot.service_installed:
+        check_warn("Gateway service is installed but not running",
+                   f"({snapshot.manager} — start it with 'hermes gateway start')")
+        f.manual_issues.append("Start the gateway service: hermes gateway start")
+        return
+    check_warn("Gateway is not resident",
+               "(no service installed and no gateway process — scheduled jobs cannot fire)")
+    f.manual_issues.append("Install the resident gateway service: hermes gateway install")

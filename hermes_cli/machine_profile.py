@@ -34,6 +34,12 @@ _T0_MAX_RAM = int(1.5 * _GIB)   # T0: <= 1 core OR <= 1.5G RAM
 _T1_MIN_RAM = 2 * _GIB          # T1: >= 2 cores AND >= 2G RAM
 _T2_MIN_CORES, _T2_MIN_RAM = 4, 8 * _GIB
 _T3_MIN_VRAM = 8 * _GIB         # T3: T2 hardware AND >= 8G dedicated VRAM
+# Apple Silicon has no dedicated VRAM to measure — the GPU shares system
+# (unified) memory, so the VRAM rule can never fire on a Mac. Approximation:
+# a T2-grade Apple Silicon machine with >= 16G unified memory can feed a
+# local model next to the OS and still earn T3; 8G machines stay T2 (the OS
+# and apps take too large a share for local-model headroom).
+_T3_MIN_UNIFIED_RAM = 16 * _GIB
 _LOW_DISK_FREE = 5 * _GIB       # below this, warn on any tier (deps + caches need room)
 
 TIER_NAMES = {"T0": "micro", "T1": "standard", "T2": "roomy", "T3": "gpu"}
@@ -65,11 +71,15 @@ class TierDecision:
 
 def classify_tier(*, cpu_cores: int | None, ram_bytes: int | None,
                   gpu_vram_bytes: int | None = None,
-                  disk_free_bytes: int | None = None) -> TierDecision:
+                  disk_free_bytes: int | None = None,
+                  os_family: str = "", native_arch: str = "") -> TierDecision:
     """Grade measured facts into T0–T3. Pure function of its arguments.
 
     Order matters: CPU/RAM set the base tier first; a GPU can only raise a T2 machine
-    to T3, never lift a low-CPU or low-RAM machine out of its base tier.
+    to T3, never lift a low-CPU or low-RAM machine out of its base tier. Measured
+    dedicated VRAM is the primary T3 rule; the Apple Silicon unified-memory
+    approximation (see ``_T3_MIN_UNIFIED_RAM``) is only a fallback for when no
+    VRAM could be measured at all — it never overrides a measured VRAM verdict.
     """
     warnings = []
     if disk_free_bytes is not None and disk_free_bytes < _LOW_DISK_FREE:
@@ -78,6 +88,9 @@ def classify_tier(*, cpu_cores: int | None, ram_bytes: int | None,
         return TierDecision("T0", tuple(warnings))
     if cpu_cores >= _T2_MIN_CORES and ram_bytes >= _T2_MIN_RAM:
         if gpu_vram_bytes is not None and gpu_vram_bytes >= _T3_MIN_VRAM:
+            return TierDecision("T3", tuple(warnings))
+        if (gpu_vram_bytes is None and os_family == "darwin" and native_arch == "arm64"
+                and ram_bytes >= _T3_MIN_UNIFIED_RAM):
             return TierDecision("T3", tuple(warnings))
         return TierDecision("T2", tuple(warnings))
     if cpu_cores >= 2 and ram_bytes >= _T1_MIN_RAM:
@@ -169,6 +182,10 @@ def _gpu_summary(facts: MachineFacts) -> str:
         parts.append(facts.gpu_name)
     if facts.gpu_vram_bytes is not None:
         parts.append(f"{round(facts.gpu_vram_bytes / 2**20)} MB VRAM")
+    elif facts.os_family == "darwin" and facts.native_arch == "arm64":
+        # No VRAM number exists to report — say so instead of inventing one:
+        # the tier was graded on unified memory (see _T3_MIN_UNIFIED_RAM).
+        parts.append("Apple Silicon 统一内存（近似判档）")
     return " · ".join(parts)
 
 
@@ -190,7 +207,8 @@ def build_profile(facts: MachineFacts, *, probed_at: str | None = None) -> dict:
     """Assemble the stored profile (the ``machine:`` config section) from measured facts."""
     decision = classify_tier(cpu_cores=facts.cpu_cores, ram_bytes=facts.ram_bytes,
                              gpu_vram_bytes=facts.gpu_vram_bytes,
-                             disk_free_bytes=facts.disk_free_bytes)
+                             disk_free_bytes=facts.disk_free_bytes,
+                             os_family=facts.os_family, native_arch=facts.native_arch)
     profile = {
         "tier": decision.tier,
         "probed_at": probed_at or datetime.now(UTC).isoformat(timespec="seconds"),
@@ -227,7 +245,8 @@ def render_environment_md(result: dict) -> str:
         if "low_disk" in result["warnings"]:
             lines.append("- 磁盘可用不足 5G：依赖与缓存可能装不下，建议先清盘或扩容。")
     lines += ["", "档位含义：T0 微型（低配保底）· T1 标准 · T2 充裕 · T3 带 GPU。"
-                  "档位按最弱的一项硬件定，GPU 只能把 T2 抬到 T3，不能把低 CPU/内存的机器抬档。", ""]
+                  "档位按最弱的一项硬件定，GPU 只能把 T2 抬到 T3，不能把低 CPU/内存的机器抬档。"
+                  "Apple Silicon 无独立显存：T2 达标且总内存 ≥16G 时按统一内存近似判 T3（8G 不升）。", ""]
     return "\n".join(lines)
 
 
