@@ -1198,9 +1198,16 @@ skills:
 # Agent Behavior
 # =============================================================================
 agent:
-  # Maximum tool-calling iterations per conversation (default: 500)
-  # Higher = more room for complex tasks, but costs more tokens
-  # Recommended: 20-30 for focused tasks, 50-100 for open exploration
+  # Maximum tool-calling iterations per conversation. There is NO factory cap:
+  # the shipped default (agent.max_turns in DEFAULT_CONFIG) is unset =
+  # unlimited, because a hard cap silently truncates long tasks mid-flight.
+  # The line below pins an explicit 500 as a generous ceiling — set a finite
+  # value when you want a hard bound on token cost. Higher = more room for
+  # complex tasks, but costs more tokens.
+  # Recommended: 20-30 for focused tasks, 50-100 for open exploration.
+  # (Interactive CLI sessions fall back to 500 when this key is unset, and
+  # `hermes setup` writes 150 into your config.yaml; gateway and cron runs
+  # stay unlimited until a value is set somewhere.)
   max_turns: 500
 
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).

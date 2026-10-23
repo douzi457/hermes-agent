@@ -41,6 +41,7 @@ def get_memory_dir() -> Path:
 
 
 from tools.memory_tool_store import (
+    DEFAULT_MEMORY_CHAR_LIMIT, DEFAULT_USER_CHAR_LIMIT,
     ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, PATCH_DROP_HINT, MemoryStore, _scan_memory_content)
 
 
@@ -53,7 +54,8 @@ def load_on_disk_store() -> MemoryStore:
         config = load_config() or {}
         mem_cfg = get_builtin_memory_config(config)
         memory_enabled, user_profile_enabled = get_builtin_memory_store_flags(config)
-        store = MemoryStore(int(mem_cfg.get("memory_char_limit", 2200)), int(mem_cfg.get("user_char_limit", 1375)),
+        store = MemoryStore(int(mem_cfg.get("memory_char_limit", DEFAULT_MEMORY_CHAR_LIMIT)),
+                            int(mem_cfg.get("user_char_limit", DEFAULT_USER_CHAR_LIMIT)),
                             memory_enabled=memory_enabled, user_profile_enabled=user_profile_enabled)
     except Exception:
         store = MemoryStore()  # config optional — fall back to defaults rather than break /memory

@@ -638,6 +638,60 @@ def _check_memory_provider(should_fix: bool, f: Finding) -> None:
         check_warn(f"{label} check failed", str(_e))
 
 
+@doctor_check()
+def _check_memory_health(should_fix: bool, f: Finding) -> None:
+    """Built-in memory files measured against their configured char limits (light pass).
+
+    Occupancy is counted exactly like MemoryStore counts it (entries joined by
+    ENTRY_DELIMITER); past 90% a warn fires because writes are refused outright
+    at 100%. Entries carrying no YYYY-MM-DD date are counted — the write
+    discipline dates every entry so staleness can be judged later. --fix never
+    edits memory content; the remedy is the consolidation pass, so an over-full
+    or undated file is reported as a manual issue pointing at it.
+    """
+    import re as _re
+
+    from hermes_cli.doctor import HERMES_HOME
+    from tools.memory_tool_store import (
+        DEFAULT_MEMORY_CHAR_LIMIT, DEFAULT_USER_CHAR_LIMIT, ENTRY_DELIMITER)
+
+    section = _doctor_memory_config(HERMES_HOME)
+
+    def _limit(key: str, fallback: int) -> int:
+        try:
+            value = int(section.get(key) or fallback)
+        except (TypeError, ValueError):
+            return fallback
+        return value if value > 0 else fallback
+
+    date_re = _re.compile(r"20\d{2}[-/]\d{1,2}[-/]\d{1,2}")
+    mem_dir = HERMES_HOME / "memories"
+    found = False
+    for fname, limit in (("MEMORY.md", _limit("memory_char_limit", DEFAULT_MEMORY_CHAR_LIMIT)),
+                         ("USER.md", _limit("user_char_limit", DEFAULT_USER_CHAR_LIMIT))):
+        path = mem_dir / fname
+        if not path.is_file():
+            continue
+        found = True
+        raw = path.read_text(encoding="utf-8-sig", errors="replace")
+        entries = [entry for entry in (part.strip() for part in raw.split(ENTRY_DELIMITER)) if entry]
+        used = len(ENTRY_DELIMITER.join(entries)) if entries else 0
+        pct = used / limit * 100
+        if pct > 90:
+            check_warn(f"{fname} is {pct:.0f}% full",
+                       f"({used}/{limit} chars — writes are refused at 100%; run the memory consolidation pass)")
+            f.manual_issues.append(f"Consolidate {fname}: merge or supersede stale entries to free memory headroom")
+        else:
+            check_ok(f"{fname} at {pct:.0f}% of its limit",
+                     f"({used}/{limit} chars, {len(entries)} {'entry' if len(entries) == 1 else 'entries'})")
+        undated = sum(1 for entry in entries if not date_re.search(entry))
+        if undated:
+            check_warn(f"{undated} {fname} {'entry' if undated == 1 else 'entries'} without a date",
+                       "(entries should carry a YYYY-MM-DD date so staleness can be judged)")
+    if not found:
+        check_info("No built-in memory files yet (memories/ is empty)")
+
+
 @doctor_check("")  # best-effort: profile enumeration must never break doctor
 def _check_profiles(should_fix: bool, f: Finding) -> None:
     from hermes_constants import PROFILE_ID_RE
