@@ -3165,3 +3165,23 @@ dashboard:
 - `ws_orphan_reap_grace_s` — how long a WS-detached session waits before the orphan reaper collects it. Raise alongside the keepalive values if clients reconnect slowly. Periodic session maintenance also completes cleanup for closed sockets and re-arms a missing orphan timer, so a detached chat cannot keep its ownership lease solely because its initial cleanup or timer was lost. Reconnecting cancels that timer; active delegated work and healthy running turns remain protected by the normal orphan-reaper checks. (`HERMES_TUI_WS_ORPHAN_REAP_GRACE_S` remains as an internal override.)
 - `ws_orphan_activity_stale_s` (default `600`) — how long a detached **running** turn's activity clock (the same clock the `agent.turn_liveness` watchdog samples: API waits, stream tokens, tool heartbeats) must be idle before the orphan reaper interrupts it. A client-absent turn that is still actively producing keeps running to completion detached — closing the laptop, backgrounding the mobile app, or a desktop update no longer cancels healthy long turns; only a genuinely wedged turn is interrupted. Set `0` to interrupt at the grace window regardless of activity (old behavior).
 - `startup_orphan_sweep` (default `true`) — the WS-orphan reap timer above is in-process, so a gateway restart (update, crash, systemd) before it fires leaves the session row open forever — phantom "active" work in `/resume` and dashboards. On every gateway boot — both the stdio TUI (`entry.main`) and the desktop/dashboard WebSocket sidecar (`handle_ws`) — rows with source `tui` / `desktop` / `subagent` / `unknown` (a row the token-accounting guard had to materialize itself) whose start time **and** newest message are both older than the session TTL (`HERMES_TUI_SESSION_TTL_S`, default 6 hours) are closed with `end_reason: startup_orphan_reap`. Messaging-platform sessions (Telegram, Discord, …) are never touched, live in-memory sessions (a client that already resumed) are excluded, and swept sessions remain resumable.
+
+## Machine Profile
+
+Machine facts probed on this host, recorded so the agent can adapt to the hardware it runs on — a 1-core/1 GB box and a GPU workstation get different presets. The probe runs in the setup tail on first install and via `hermes doctor --fix`; the results are written to the `machine` section of `config.yaml` and rendered to `ENVIRONMENT.md` in the Hermes home. **This section is machine-written — don't hand-edit it**; re-probe instead.
+
+```yaml
+machine:
+  tier: ""          # "T0" | "T1" | "T2" | "T3" ("" = not probed yet)
+  probed_at: ""     # ISO-8601 timestamp of the last probe
+  cpu_cores: null   # logical CPUs seen by the OS
+  ram_mb: null      # physical memory visible to the OS
+  disk_free_gb: null  # free space on the HERMES_HOME volume at probe time
+  gpu: ""           # e.g. "nvidia · 8192 MB VRAM" or "none"
+  summary: ""       # one-line summary injected into the system prompt
+```
+
+- `machine.tier` — the capability tier derived from the probe: **T0** micro (≤1 core or ≤1.5 GB RAM; heavy toolsets are disabled and memory limits tightened by the first-run presets), **T1** standard, **T2** ample (≥4 cores and ≥8 GB RAM), **T3** GPU (a T2 machine with ≥8 GB measured VRAM). A GPU can only raise a T2 machine to T3, never lift a low-CPU or low-RAM machine out of its base tier.
+- `machine.probed_at` / `machine.cpu_cores` / `machine.ram_mb` / `machine.disk_free_gb` — the raw facts from the last probe; `disk_free_gb` below 5 GB adds a low-disk warning to the profile.
+- `machine.gpu` — the GPU description from the probe (vendor and VRAM when measurable). On Apple Silicon there is no dedicated VRAM to measure, so a T2 machine with ≥16 GB of unified memory is graded T3 by approximation and the value says so (`Apple Silicon 统一内存（近似判档）`) — measured VRAM always wins over the approximation.
+- `machine.summary` — the one-line rendering of the profile (`Machine: T1 (standard) · 2 cores · 7.7G RAM · GPU: none`) injected into the system prompt's environment hints once per session.
