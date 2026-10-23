@@ -756,9 +756,26 @@ def _run_setup_wizard_impl(args):
     _record_setup_completed(config)
 
 
+def _apply_first_run_machine_profile() -> None:
+    """Probe the machine and apply its tier's first-run config presets (machine_profile).
+
+    Best-effort by design: this rides the end of a successful wizard run, and a probe
+    that cannot run (odd hardware, locked-down config) must never fail setup itself.
+    """
+    try:
+        from hermes_cli.machine_profile import apply_first_run_machine_profile
+
+        print_success(apply_first_run_machine_profile())
+    except Exception as exc:
+        logger.exception("first-run machine profile failed; setup continues without it")
+        print_warning(f"机器体检未完成（不影响使用，可稍后运行 hermes doctor --fix）：{exc}")
+
+
 def _record_setup_completed(config: dict) -> None:
     """Count a wizard run that finished. Every setup flow ends here, so the one-time
-    shared-metrics offer runs first: a user who opts in now is counted; the API checks enablement."""
+    shared-metrics offer runs first: a user who opts in now is counted; the API checks enablement.
+    The first-run machine profile hook rides the same tail for the same reason."""
+    _apply_first_run_machine_profile()
     from hermes_cli.observability.shared_metrics_consent import offer_consent_if_undecided
 
     offer_consent_if_undecided(config)
