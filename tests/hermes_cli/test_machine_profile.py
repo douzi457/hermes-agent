@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import subprocess
+from types import SimpleNamespace
+
 import pytest
 
+import hermes_cli.machine_profile as mp
 from hermes_cli.machine_profile import (
     classify_tier, format_summary, load_machine_profile, run_machine_probe,
 )
@@ -63,3 +67,152 @@ def test_probe_persists_profile_and_environment_md() -> None:
     assert result["warnings"] == list(expected.warnings)
     assert stored["summary"] == format_summary(stored)
     assert stored["summary"].startswith("Machine: ")
+
+
+_PRESET_SECTION = (
+    "## 首启预设（按档位自动应用，仅首启一次）\n"
+    "\n"
+    "- `delegation.max_concurrent_children` = `1`：子 Agent 改为串行，避免并发请求压垮小机器\n"
+    "- `compression.protect_last_n` = `10`：压缩时原样保留的最近消息条数"
+)
+_CONCLUSION_SECTION = (
+    "## 首启对话结论\n"
+    "\n"
+    "- 日期：2026-10-23\n"
+    "- 主要用途：写代码与文档\n"
+    "- 本次调整：无"
+)
+
+
+def _append_sections(*sections: str) -> None:
+    env_path = get_hermes_home() / "ENVIRONMENT.md"
+    text = env_path.read_text(encoding="utf-8").rstrip("\n")
+    env_path.write_text(text + "\n\n" + "\n\n".join(sections) + "\n", encoding="utf-8")
+
+
+def test_reprobe_preserves_appended_sections_verbatim_and_once() -> None:
+    """doctor --fix re-probes: the report regenerates, the appended sections survive."""
+    run_machine_probe()
+    _append_sections(_PRESET_SECTION, _CONCLUSION_SECTION)
+
+    run_machine_probe()  # the re-probe that used to wipe both sections
+    text = (get_hermes_home() / "ENVIRONMENT.md").read_text(encoding="utf-8")
+    assert _PRESET_SECTION in text  # verbatim, not paraphrased or truncated
+    assert _CONCLUSION_SECTION in text
+    assert text.count("## 首启预设") == 1
+    assert text.count("## 首启对话结论") == 1
+    assert text.index("## 首启预设") < text.index("## 首启对话结论")  # original order
+
+    run_machine_probe()  # a second re-probe must not stack copies
+    text = (get_hermes_home() / "ENVIRONMENT.md").read_text(encoding="utf-8")
+    assert _PRESET_SECTION in text and _CONCLUSION_SECTION in text
+    assert text.count("## 首启预设") == 1
+    assert text.count("## 首启对话结论") == 1
+
+
+def test_reprobe_collapses_duplicate_appended_sections() -> None:
+    run_machine_probe()
+    _append_sections(_CONCLUSION_SECTION, _CONCLUSION_SECTION)  # recorded twice somehow
+    run_machine_probe()
+    text = (get_hermes_home() / "ENVIRONMENT.md").read_text(encoding="utf-8")
+    assert text.count("## 首启对话结论") == 1
+    assert _CONCLUSION_SECTION in text
+
+
+def test_reprobe_does_not_invent_sections() -> None:
+    run_machine_probe()
+    run_machine_probe()
+    text = (get_hermes_home() / "ENVIRONMENT.md").read_text(encoding="utf-8")
+    assert "## 首启预设" not in text and "## 首启对话结论" not in text  # headings, not the header's mention
+
+
+# ---------------------------------------------------------------------------
+# Linux NVIDIA VRAM fallback: host facts cannot measure it (no sysfs total,
+# and that package never spawns), so the probe asks nvidia-smi — located via
+# hermes_platform.resolver — and degrades to None on any failure.
+# ---------------------------------------------------------------------------
+
+
+def _fake_resolution(command: tuple[str, ...]):
+    from hermes_platform.resolver.core import Candidate, Resolution
+
+    candidates = tuple(Candidate(cmd, "PATH", True) for cmd in command)
+    return Resolution("path_executable" if candidates else "missing", candidates)
+
+
+def test_nvidia_smi_vram_parses_largest_gpu(monkeypatch) -> None:
+    monkeypatch.setattr("hermes_platform.resolver.locate_command",
+                        lambda name, **kw: _fake_resolution(("/usr/bin/nvidia-smi",)))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: SimpleNamespace(
+        returncode=0, stdout="8192\n24576\n", stderr=""))
+    assert mp._nvidia_smi_vram_bytes() == 24576 << 20
+
+
+def test_nvidia_smi_vram_missing_binary_never_spawns(monkeypatch) -> None:
+    monkeypatch.setattr("hermes_platform.resolver.locate_command",
+                        lambda name, **kw: _fake_resolution(()))
+
+    def _boom(*a, **kw):
+        raise AssertionError("must not spawn when nvidia-smi is absent")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+    assert mp._nvidia_smi_vram_bytes() is None
+
+
+@pytest.mark.parametrize("result", [
+    SimpleNamespace(returncode=9, stdout="24576\n", stderr="boom"),   # driver error
+    SimpleNamespace(returncode=0, stdout="N/A\n", stderr=""),         # unmeasurable card
+    SimpleNamespace(returncode=0, stdout="", stderr=""),              # empty output
+])
+def test_nvidia_smi_vram_failures_degrade_to_none(monkeypatch, result) -> None:
+    monkeypatch.setattr("hermes_platform.resolver.locate_command",
+                        lambda name, **kw: _fake_resolution(("/usr/bin/nvidia-smi",)))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: result)
+    assert mp._nvidia_smi_vram_bytes() is None
+
+
+def test_nvidia_smi_vram_spawn_error_degrades_to_none(monkeypatch) -> None:
+    monkeypatch.setattr("hermes_platform.resolver.locate_command",
+                        lambda name, **kw: _fake_resolution(("/usr/bin/nvidia-smi",)))
+
+    def _boom(*a, **kw):
+        raise OSError("nvidia-smi vanished")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+    assert mp._nvidia_smi_vram_bytes() is None
+
+
+def _patch_roomy_nvidia_host(monkeypatch, *, sysfs_vram: int | None) -> None:
+    """Host facts for a roomy Linux box whose NVIDIA VRAM sysfs cannot measure."""
+    from hermes_platform.host import facts
+
+    monkeypatch.setattr(facts, "gpu_vram_bytes", lambda: sysfs_vram)
+    monkeypatch.setattr(facts, "gpu_class", lambda: "nvidia")
+    monkeypatch.setattr(facts, "cpu_count", lambda: 8)
+    monkeypatch.setattr(facts, "ram_total_bytes", lambda: 32 * _GIB)
+
+
+def test_probe_falls_back_to_nvidia_smi_and_reaches_t3(monkeypatch) -> None:
+    _patch_roomy_nvidia_host(monkeypatch, sysfs_vram=None)
+    monkeypatch.setattr(mp, "_nvidia_smi_vram_bytes", lambda: 24 * _GIB)
+    result = run_machine_probe()
+    assert result["profile"]["tier"] == "T3"
+    assert "24576 MB VRAM" in result["profile"]["gpu"]
+
+
+def test_probe_nvidia_smi_failure_leaves_tier_at_t2(monkeypatch) -> None:
+    _patch_roomy_nvidia_host(monkeypatch, sysfs_vram=None)
+    monkeypatch.setattr(mp, "_nvidia_smi_vram_bytes", lambda: None)
+    result = run_machine_probe()
+    assert result["profile"]["tier"] == "T2"  # unmeasured GPU never qualifies upward
+
+
+def test_probe_skips_fallback_when_sysfs_measured(monkeypatch) -> None:
+    _patch_roomy_nvidia_host(monkeypatch, sysfs_vram=12 * _GIB)
+
+    def _boom():
+        raise AssertionError("fallback must not run when sysfs already measured VRAM")
+
+    monkeypatch.setattr(mp, "_nvidia_smi_vram_bytes", _boom)
+    result = run_machine_probe()
+    assert result["profile"]["tier"] == "T3"

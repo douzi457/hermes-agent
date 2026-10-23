@@ -1,8 +1,12 @@
 """Machine profile: probe this machine once, grade it into a tier, and record the result.
 
-Facts come from ``hermes_platform.host`` (never re-measured here); this module only assembles
-them into a profile, classifies the tier, and persists it — the ``machine:`` section of
-``config.yaml`` (machine-readable) plus a human-readable ``ENVIRONMENT.md`` in HERMES_HOME.
+Facts come from ``hermes_platform.host``; this module assembles them into a profile,
+classifies the tier, and persists it — the ``machine:`` section of ``config.yaml``
+(machine-readable) plus a human-readable ``ENVIRONMENT.md`` in HERMES_HOME. The one
+fact re-measured here is Linux NVIDIA VRAM: NVIDIA exposes no sysfs total and the host
+package never spawns by contract, so the probe falls back to the driver's own
+``nvidia-smi``, located through ``hermes_platform.resolver`` (see
+:func:`_nvidia_smi_vram_bytes`).
 The tier is advisory: it seeds sensible defaults for low-end machines and is injected into
 the system prompt as a one-line summary, but no behaviour reads it yet beyond display.
 
@@ -98,6 +102,9 @@ def probe_machine_facts(home: Path | None = None) -> MachineFacts:
     except OSError:
         disk_free = None
     nvidia = host.nvidia_gpus()
+    vram = host.gpu_vram_bytes()
+    if vram is None and host.os_family().startswith("linux") and host.gpu_class() == "nvidia":
+        vram = _nvidia_smi_vram_bytes()  # the one fact host facts cannot measure (see below)
     return MachineFacts(
         cpu_cores=host.cpu_count(),
         cpu_model=host.cpu_model(),
@@ -105,13 +112,42 @@ def probe_machine_facts(home: Path | None = None) -> MachineFacts:
         disk_free_bytes=disk_free,
         gpu_class=host.gpu_class(),
         gpu_name=nvidia[0].name if nvidia else "",
-        gpu_vram_bytes=host.gpu_vram_bytes(),
+        gpu_vram_bytes=vram,
         os_family=host.os_family(),
         os_release=_os_release(host.os_family()),
         native_arch=host.native_arch(),
         is_wsl=runtime.is_wsl(),
         is_container=runtime.is_container(),
     )
+
+
+def _nvidia_smi_vram_bytes() -> int | None:
+    """Largest NVIDIA VRAM total from ``nvidia-smi``, or None when it cannot be read.
+
+    Linux NVIDIA cards expose no sysfs VRAM total, and ``hermes_platform.host`` never
+    spawns by contract — so the spawn lives here, in the consumer. The executable is
+    located through ``hermes_platform.resolver`` (PATH first, then the WSL driver
+    directory — the same locations ``hermes_cli.local_runtime`` checks), run once
+    with a short timeout, and its output parsed by the pure parser in host.facts.
+    Every failure degrades to None: an unmeasured GPU stays unmeasured, never a guess.
+    """
+    import subprocess
+
+    from hermes_platform.host.facts import parse_nvidia_smi_vram_total
+    from hermes_platform.resolver import locate_command
+
+    command = locate_command("nvidia-smi", known_dirs=("/usr/lib/wsl/lib",)).command
+    if not command:
+        return None
+    try:
+        out = subprocess.run(
+            [*command, "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return parse_nvidia_smi_vram_total(out.stdout)
 
 
 def _os_release(os_family: str) -> str:
@@ -182,7 +218,8 @@ def render_environment_md(result: dict) -> str:
         ("体检时间", profile["probed_at"]),
     ]
     lines = ["# 本机环境档案（ENVIRONMENT）", "",
-             "由机器体检自动生成，换机器或升配后重跑体检即覆盖（`hermes doctor --fix`）。", "",
+             "由机器体检自动生成，换机器或升配后重跑体检即更新（`hermes doctor --fix`）；"
+             "文末追加的两节（首启时记录的预设与对话结论）不属于体检正文，重跑时会原样保留。", "",
              "| 项目 | 值 |", "|---|---|"]
     lines += [f"| {key} | {value} |" for key, value in rows]
     if result["warnings"]:
@@ -194,11 +231,51 @@ def render_environment_md(result: dict) -> str:
     return "\n".join(lines)
 
 
+# Level-2 sections appended to ENVIRONMENT.md after generation: the first-run
+# presets (apply_first_run_machine_profile) and the first-run tour's conclusions
+# (recorded by the agent under the first-run-tour skill). They are the record of
+# what first run changed and decided — not probe output — so a re-probe carries
+# them over verbatim instead of regenerating them away.
+_APPENDED_SECTION_PREFIXES = ("## 首启预设", "## 首启对话结论")
+
+
+def _preserved_appended_sections(text: str) -> list[str]:
+    """The appended sections of an existing ENVIRONMENT.md, in order, one copy each.
+
+    A section runs from its ``## `` heading to the next level-2 heading or EOF.
+    Only the known appended headings qualify — the generated ``## 告警`` section
+    is regenerated with the report, never preserved. A repeated heading keeps
+    its first copy, so repeated re-probes converge instead of accumulating.
+    """
+    preserved: list[str] = []
+    seen: set[str] = set()
+    heading: str | None = None
+    body: list[str] = []
+
+    def flush() -> None:
+        if heading is not None and heading not in seen:
+            seen.add(heading)
+            preserved.append("\n".join([heading, *body]).rstrip("\n"))
+
+    for line in text.splitlines():
+        if line.startswith("## "):
+            flush()
+            stripped = line.strip()
+            heading = stripped if stripped.startswith(_APPENDED_SECTION_PREFIXES) else None
+            body = []
+        elif heading is not None:
+            body.append(line)
+    flush()
+    return preserved
+
+
 def run_machine_probe(*, home: Path | None = None, write: bool = True) -> dict:
     """Probe, grade, and (unless ``write=False``) persist the profile.
 
     Persistence: the ``machine:`` section of the profile's ``config.yaml`` via the config
-    writer seam, plus ``ENVIRONMENT.md`` beside it. Returns the :func:`build_profile` dict.
+    writer seam, plus ``ENVIRONMENT.md`` beside it. Regenerating ENVIRONMENT.md
+    preserves its appended sections (see :func:`_preserved_appended_sections`).
+    Returns the :func:`build_profile` dict.
     """
     if home is None:
         from hermes_constants import get_hermes_home
@@ -212,7 +289,17 @@ def run_machine_probe(*, home: Path | None = None, write: bool = True) -> dict:
         raw = read_raw_config()
         raw["machine"] = result["profile"]
         atomic_config_write(get_config_path(), raw)
-        atomic_write_text(home / "ENVIRONMENT.md", render_environment_md(result))
+        env_path = home / "ENVIRONMENT.md"
+        preserved: list[str] = []
+        if env_path.is_file():
+            try:
+                preserved = _preserved_appended_sections(env_path.read_text(encoding="utf-8-sig"))
+            except (OSError, UnicodeDecodeError):
+                preserved = []  # an unreadable old report must not block the re-probe
+        text = render_environment_md(result)
+        if preserved:
+            text = text.rstrip("\n") + "\n\n" + "\n\n".join(preserved) + "\n"
+        atomic_write_text(env_path, text)
     return result
 
 

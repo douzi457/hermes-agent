@@ -127,6 +127,16 @@ def test_parse_vram_total(text: str, expected: int | None) -> None:
     assert facts.parse_vram_total(text) == expected
 
 
+@pytest.mark.parametrize(("text", "expected"), [
+    ("24576", 24576 << 20),                        # one GPU, MiB in → bytes out
+    ("8192\n24576\n", 24576 << 20),                # several GPUs: the largest single card
+    ("N/A\n16384\n", 16384 << 20),                 # unmeasurable rows are skipped, not fatal
+    ("", None), ("N/A", None), ("0", None), ("-5", None),
+])
+def test_parse_nvidia_smi_vram_total(text: str, expected: int | None) -> None:
+    assert facts.parse_nvidia_smi_vram_total(text) == expected
+
+
 def test_live_cpu_count_and_gpu_vram_are_measured_or_none(cleared_fact_caches) -> None:
     cores = facts.cpu_count()
     assert cores is None or cores >= 1
