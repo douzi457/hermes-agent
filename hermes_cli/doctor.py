@@ -7,6 +7,7 @@ Check bodies live in the ``doctor_*`` siblings.
 import os
 import sys
 
+from agent.i18n import t
 from hermes_cli.config import get_env_path, get_hermes_home, get_project_root
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
@@ -74,13 +75,13 @@ _PROVIDER_ENV_HINTS = (
 @doctor_check()
 def _check_auth_providers(should_fix: bool, f: Finding) -> None:
     """Refresh-free OAuth status snapshot (doctor must never trigger a token refresh)."""
-    with warn_on_error("Auth provider status", "(could not check: {e})"):
+    with warn_on_error(t("doctor.auth.status_label"), t("doctor.auth.could_not_check")):
         from hermes_cli.auth import get_nous_auth_status_local, get_codex_auth_status, get_minimax_oauth_auth_status
         _login_row("Nous Portal auth", get_nous_auth_status_local())
         # Native OAuth is Hermes' own device-code flow; the Codex CLI only imports existing ~/.codex/auth.json
         # tokens, so the hint sits under the Codex row (not as another provider's remedy).
         if not _login_row("OpenAI Codex auth", get_codex_auth_status(), show_error=True) and not _safe_which("codex"):
-            check_info("codex CLI not installed (optional — only required to import tokens from an existing Codex CLI login)")
+            check_info(t("doctor.auth.codex_missing"))
         minimax_status = get_minimax_oauth_auth_status()
         _login_row("MiniMax OAuth", minimax_status, f"(logged in, region={minimax_status.get('region', 'global')})")
     with warn_on_error(""):  # xAI OAuth separately, so an import failure cannot disrupt the rows already printed
@@ -88,9 +89,11 @@ def _check_auth_providers(should_fix: bool, f: Finding) -> None:
         _login_row("xAI OAuth", get_xai_oauth_auth_status() or {}, show_error=True)
 
 
-def _login_row(label: str, status: dict, ok_detail: str = "(logged in)", show_error: bool = False) -> bool:
+def _login_row(label: str, status: dict, ok_detail: str | None = None, show_error: bool = False) -> bool:
     """ok/warn row for an OAuth status dict; with show_error, its ``error`` hint prints under a not-logged-in row."""
-    logged_in = check_bool(status.get("logged_in"), (label, ok_detail), (label, "(not logged in)"))
+    if ok_detail is None:
+        ok_detail = t("doctor.auth.logged_in")
+    logged_in = check_bool(status.get("logged_in"), (label, ok_detail), (label, t("doctor.auth.not_logged_in")))
     if not logged_in and show_error and status.get("error"):
         check_info(status["error"])
     return logged_in
@@ -101,7 +104,7 @@ def _check_api_connectivity(should_fix: bool, f: Finding) -> None:
     """Parallel HTTP/SDK probes for every configured provider; results printed in submission order."""
     probes = build_probes()
     # Single status line so users see something happening; ``\r`` clears it once results land.
-    print(f"  {color(f'Running {len(probes)} connectivity checks in parallel…', Colors.DIM)}", end="", flush=True)
+    print(f"  {color(t('doctor.connectivity.running', count=len(probes)), Colors.DIM)}", end="", flush=True)
     results = run_probes(probes)
     print("\r" + " " * 70 + "\r", end="")
     for r in results:
@@ -109,6 +112,30 @@ def _check_api_connectivity(should_fix: bool, f: Finding) -> None:
             print(f"  {glyph} {label}" + (f" {detail}" if detail else ""))
         if r.issues and not _has_healthy_oauth_fallback_for_apikey_provider(r.label):
             f.issues.extend(r.issues)
+
+
+# Catalog key per DOCTOR_CHECKS section title (titles stay English in the table; run_doctor
+# translates at print time so the active display.language applies).
+_SECTION_TITLE_KEYS = {
+    'Security Advisories': "doctor.section.security_advisories",
+    'MCP Server Security': "doctor.section.mcp_security",
+    'Python Environment': "doctor.section.python_environment",
+    'SSL / CA Certificates': "doctor.section.ssl_certificates",
+    'Required Packages': "doctor.section.required_packages",
+    'Machine Profile': "doctor.section.machine_profile",
+    'Configuration Files': "doctor.section.configuration_files",
+    'xAI Model Retirement (May 15, 2026)': "doctor.section.xai_retirement",
+    'Session Reset (timers removed Sep 7, 2026)': "doctor.section.session_reset",
+    'Auth Providers': "doctor.section.auth_providers",
+    'Directory Structure': "doctor.section.directory_structure",
+    'Gateway Residency': "doctor.section.gateway_residency",
+    'External Tools': "doctor.section.external_tools",
+    'API Connectivity': "doctor.section.api_connectivity",
+    'Tool Availability': "doctor.section.tool_availability",
+    'Skills Hub': "doctor.section.skills_hub",
+    'Memory Provider': "doctor.section.memory_provider",
+    'NeMo Relay Plugins': "doctor.section.nemo_relay",
+}
 
 
 # Ordered (section title, check). None title = check prints its own header (or none); order is user-visible.
@@ -140,14 +167,13 @@ def _ack_advisory(ack_target: str) -> None:
     from hermes_cli.security_advisories import ADVISORIES, ack_advisory
     valid_ids = {a.id for a in ADVISORIES}
     if ack_target not in valid_ids:
-        print(color(f"Unknown advisory ID: {ack_target!r}. Known IDs: {', '.join(sorted(valid_ids)) or '(none)'}", Colors.RED))
+        print(color(t("doctor.ack.unknown", target=repr(ack_target),
+                      ids=', '.join(sorted(valid_ids)) or '(none)'), Colors.RED))
         sys.exit(2)
     if ack_advisory(ack_target):
-        print(color(f"  ✓ Acknowledged advisory {ack_target}. It will no longer trigger startup banners.", Colors.GREEN))
+        print(color(t("doctor.ack.done", target=ack_target), Colors.GREEN))
     else:
-        print(color(f"  ✗ Could not save the acknowledgement for {ack_target}. Make sure {_DHH}/config.yaml is "
-                    f"writable (`hermes config path` prints the exact file), then re-run "
-                    f"`hermes doctor --ack {ack_target}`.", Colors.RED))
+        print(color(t("doctor.ack.failed", target=ack_target, home=_DHH), Colors.RED))
         sys.exit(1)
 
 
@@ -157,21 +183,21 @@ def _print_summary(should_fix: bool, total: Finding) -> None:
     numbered = "".join(f"  {i}. {issue}\n" for i, issue in enumerate(remaining, 1))
     if should_fix and total.fixed > 0:
         print(color("─" * 60, Colors.GREEN))
-        print(color(f"  Fixed {total.fixed} issue(s).", Colors.GREEN, Colors.BOLD), end="")
-        print(color(f" {len(remaining)} issue(s) require manual intervention.", Colors.YELLOW, Colors.BOLD) if remaining else "")
+        print(color(t("doctor.summary.fixed", count=total.fixed), Colors.GREEN, Colors.BOLD), end="")
+        print(color(t("doctor.summary.manual_suffix", count=len(remaining)), Colors.YELLOW, Colors.BOLD) if remaining else "")
         print()
         if remaining:
             print(numbered)
     elif remaining:
         print(color("─" * 60, Colors.YELLOW))
-        print(color(f"  Found {len(remaining)} issue(s) to address:", Colors.YELLOW, Colors.BOLD))
+        print(color(t("doctor.summary.found", count=len(remaining)), Colors.YELLOW, Colors.BOLD))
         print()
         print(numbered)
         if not should_fix and total.issues:
-            print(color("  Tip: run 'hermes doctor --fix' to auto-fix what's possible.", Colors.DIM))
+            print(color(t("doctor.summary.tip"), Colors.DIM))
     else:
         print(color("─" * 60, Colors.GREEN))
-        print(color("  All checks passed! 🎉", Colors.GREEN, Colors.BOLD))
+        print(color(t("doctor.summary.all_passed"), Colors.GREEN, Colors.BOLD))
     print()
 
 
@@ -190,7 +216,7 @@ def run_doctor(args):
     total = Finding()
     for title, check in DOCTOR_CHECKS:
         if title:
-            _section(title)
+            _section(t(_SECTION_TITLE_KEYS[title]) if title in _SECTION_TITLE_KEYS else title)
         total.merge(check(should_fix))
     # Opt-in live probes run AFTER all static checks (`--live`: real network calls; bounded + read-only).
     with warn_on_error(""):

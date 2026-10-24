@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from agent.i18n import t
 from hermes_cli.doctor_report import (
     Finding, _fail_and_issue, _section, check_bool, check_info, check_ok, check_warn, doctor_check, ensure_dir,
     warn_on_error,
@@ -137,7 +138,7 @@ def check_legacy_desktop_checkout() -> None:
     if not (checkout / ".git").exists():
         return
 
-    _section("Legacy Desktop Checkout")
+    _section(t("doctor.section.legacy_desktop"))
 
     def _git(*args: str):
         try:
@@ -678,18 +679,20 @@ def _check_memory_health(should_fix: bool, f: Finding) -> None:
         used = len(ENTRY_DELIMITER.join(entries)) if entries else 0
         pct = used / limit * 100
         if pct > 90:
-            check_warn(f"{fname} is {pct:.0f}% full",
-                       f"({used}/{limit} chars — writes are refused at 100%; run the memory consolidation pass)")
-            f.manual_issues.append(f"Consolidate {fname}: merge or supersede stale entries to free memory headroom")
+            check_warn(t("doctor.check.memory.full", fname=fname, pct=f"{pct:.0f}"),
+                       t("doctor.check.memory.full_detail", used=used, limit=limit))
+            f.manual_issues.append(t("doctor.check.memory.consolidate_issue", fname=fname))
         else:
-            check_ok(f"{fname} at {pct:.0f}% of its limit",
-                     f"({used}/{limit} chars, {len(entries)} {'entry' if len(entries) == 1 else 'entries'})")
+            check_ok(t("doctor.check.memory.ok", fname=fname, pct=f"{pct:.0f}"),
+                     t("doctor.check.memory.ok_detail_one" if len(entries) == 1 else "doctor.check.memory.ok_detail_many",
+                       used=used, limit=limit, count=len(entries)))
         undated = sum(1 for entry in entries if not date_re.search(entry))
         if undated:
-            check_warn(f"{undated} {fname} {'entry' if undated == 1 else 'entries'} without a date",
-                       "(entries should carry a YYYY-MM-DD date so staleness can be judged)")
+            check_warn(t("doctor.check.memory.undated_one" if undated == 1 else "doctor.check.memory.undated_many",
+                         count=undated, fname=fname),
+                       t("doctor.check.memory.undated_detail"))
     if not found:
-        check_info("No built-in memory files yet (memories/ is empty)")
+        check_info(t("doctor.check.memory.none"))
 
 
 @doctor_check("")  # best-effort: profile enumeration must never break doctor
@@ -700,7 +703,7 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
     named_profiles = [p for p in list_profiles() if not p.is_default]
     if not named_profiles:
         return
-    _section("Profiles")
+    _section(t("doctor.section.profiles"))
     check_ok(f"{len(named_profiles)} profile(s) found")
     wrapper_dir = _get_wrapper_dir()
     for p in named_profiles:
