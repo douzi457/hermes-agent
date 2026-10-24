@@ -50,7 +50,9 @@ SOUL、值班包（台账/偏好/技能/6 个 job 模板/哨兵/常驻方案）�
 2. **填 Key（部署者自填，任何人不经手）**：`hermes config env-path` 找到
    `.env`，按所选 provider 填 Key（如走 OpenRouter 填 `OPENROUTER_API_KEY`，
    变量名以该文件内注释与 provider 文档为准）。Key 只进 `.env`，
-   不进 config.yaml、不进记忆、不进本包任何文件。
+   不进 config.yaml、不进记忆、不进本包任何文件。填完顺手收紧 `.env`
+   权限：POSIX `chmod 600`、Windows 确认仅本人账户可读——`hermes doctor`
+   有专门检查这一项，POSIX 下 `--fix` 会自动 chmod 600。
 3. **合并私有配置**：把 `config/config.private.template.yaml` 的段落合并进
    config.yaml（approvals manual、verify_on_stop、max_turns、记忆
    8000/3000 + write_approval、aux 分工、fallback 链），逐项注释里有键出处

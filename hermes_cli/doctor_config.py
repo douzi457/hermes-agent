@@ -4,6 +4,7 @@ Split out of ``hermes_cli/doctor.py``."""
 from __future__ import annotations
 
 import os
+import sys
 from hermes_cli.doctor_report import (
     Finding, _fail_and_issue, _section, check_bool, check_fail, check_info, check_ok, check_warn, doctor_check,
     warn_on_error,
@@ -198,6 +199,47 @@ def _check_env_file(should_fix: bool, f: Finding) -> None:
         else:
             check_info("Run 'hermes setup' to create one")
             f.issues.append("Run 'hermes setup' to create .env")
+
+
+def _env_mode_exposed(mode: int) -> bool:
+    """True when a POSIX file mode grants group/other any access."""
+    return bool(mode & 0o077)
+
+
+@doctor_check()
+def _check_env_permissions(should_fix: bool, f: Finding) -> None:
+    """The .env holds every API key; on POSIX it must not be readable beyond the owner.
+
+    --fix chmods 0600: the same tightening _check_env_file applies to the .env
+    it creates, and a metadata-only change (content untouched, freely
+    reversible), so it belongs to doctor's safely-auto-fixable class alongside
+    directory creation and symlink repair. Windows has no POSIX mode bits —
+    information only there, never a finding, so an ACL-protected file is not
+    misreported as a problem.
+    """
+    import stat as _stat
+
+    from hermes_cli.doctor import HERMES_HOME, _DHH
+
+    env_path = HERMES_HOME / ".env"  # == hermes_cli.config.get_env_path()
+    if not env_path.is_file():
+        return  # presence (and creation) is _check_env_file's row
+    if sys.platform == "win32":
+        check_info(f"{_DHH}/.env permissions are not graded on Windows (no POSIX mode bits)"
+                   " — confirm only your own account can read it")
+        return
+    mode = _stat.S_IMODE(env_path.stat().st_mode)
+    if not _env_mode_exposed(mode):
+        check_ok(f"{_DHH}/.env is owner-only", f"(mode {mode:03o})")
+        return
+    if should_fix:
+        os.chmod(env_path, 0o600)
+        check_ok(f"Restricted {_DHH}/.env to owner-only", "(chmod 600)")
+        f.fixed += 1
+        return
+    check_warn(f"{_DHH}/.env is accessible beyond your account",
+               f"(mode {mode:03o} — group/other can read the API keys it holds)")
+    f.issues.append(f"Restrict {_DHH}/.env permissions — run 'hermes doctor --fix' (chmod 600)")
 
 
 def _known_provider_ids(cfg: dict) -> tuple[set, list, object, object, object]:

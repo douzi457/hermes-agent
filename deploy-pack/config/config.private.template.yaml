@@ -6,6 +6,8 @@
 # config_defaults.py 的 DEFAULT_CONFIG），这里只写个人部署要覆盖的项。
 # 每项注释格式：键在代码中的位置 T0/T1/T2/T3 怎么调。
 # 密钥永远不写进本文件：API Key 只进 ~/.hermes/.env（见 README 第 2 步）。
+# .env 落盘后确认权限：POSIX chmod 600、Windows 仅本人账户可读
+# （hermes doctor 有专门检查，--fix 可自动收紧 POSIX 权限）。
 # ============================================================
 
 # ---------- 主脑 ----------

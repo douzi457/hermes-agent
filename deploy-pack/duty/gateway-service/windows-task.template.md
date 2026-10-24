@@ -40,3 +40,16 @@ hermes gateway status
   服务账户运行，细节以部署时 `schtasks /Create /?` 与
   `hermes gateway install --help` 的实际输出为准。
 - 停用：`schtasks /Delete /TN "Hermes Gateway" /F`。
+
+## 低权限运行
+
+- 不要用内置 Administrator 或日常管理员账户跑 gateway。为 Hermes 建一个
+  **专用标准用户**（如 `hermes-svc`，普通 Users 组、无管理员权）专供
+  gateway 使用：手动模板在 `schtasks /Create` 里加 `/RU hermes-svc /RL LIMITED`；
+  走官方 install 路径的，装完打开任务计划程序确认 Hermes 任务的运行账户，
+  不是专用标准用户就改过来。`hermes doctor` 的 Gateway Residency 检查会
+  报告网关进程的实际属主，跑成 Administrator/root 时会告警。
+- 该账户要对自己的 HERMES_HOME（默认其 `%USERPROFILE%\.hermes`）有读写权；
+  .env、memories、state.db 都在里面，不要让其他账户共享这份目录。
+- 任务计划程序会把运行账户的密码存进系统凭据库以便无人登录时启动；
+  密码不要写进任何脚本、.cmd 包装或任务参数里。
