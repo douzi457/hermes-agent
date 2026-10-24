@@ -28,6 +28,11 @@ ExecStart=__HERMES_BIN__ gateway run --replace
 Environment=HERMES_HOME=%h/.hermes
 Restart=always
 RestartSec=10
+# 权限：本模板是 user unit，天然以你自己的账户运行（非 root），保持这样即可。
+# 若改造成系统级 unit（放 /etc/systemd/system/），必须启用下面这行并把
+# HERMES_HOME 的属主给该专用账户；不要以 root 跑 gateway——它带着全部
+# 渠道凭据与工具执行权，被攻破时权限越大、损失越大。
+# User=hermes
 # 无人值守审批在 config 里保持 deny（approvals.cron_mode 等），
 # 不要在本 unit 里用环境变量绕过审批。
 

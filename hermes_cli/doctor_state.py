@@ -4,6 +4,7 @@ Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_c
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 from agent.i18n import t
@@ -693,6 +694,109 @@ def _check_memory_health(should_fix: bool, f: Finding) -> None:
                        t("doctor.check.memory.undated_detail"))
     if not found:
         check_info(t("doctor.check.memory.none"))
+
+
+# Suspected-secret scan: high-confidence shapes only. A hit is reported as
+# file + line + pattern label + a mask of at most the first 4 characters —
+# the full value never appears in any doctor output (scrollback, screenshots,
+# pasted logs). The bias is deliberate: miss an oddly-shaped secret rather
+# than cry wolf over ordinary prose, so patterns are anchored and
+# credential-shaped, and prose that merely *discusses* variable names (no
+# value attached) cannot trigger.
+_SECRET_FORMAT_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    ("private key block", re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----")),
+    ("API key (sk-…)", re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}")),
+    ("GitHub token", re.compile(r"(?<![A-Za-z0-9])(?:ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})")),
+    ("AWS access key ID", re.compile(r"(?<![A-Z0-9])AKIA[0-9A-Z]{16}")),
+    ("Slack token", re.compile(r"(?<![A-Za-z0-9])xox[baprs]-[A-Za-z0-9-]{10,}")),
+)
+_SECRET_ASSIGNMENT_RE = re.compile(r"^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*\"?([^\s\"']{10,})")
+_SECRET_NAME_MARKERS = ("API_KEY", "SECRET", "TOKEN", "PASSWORD", "PRIVATE_KEY")
+_PLACEHOLDER_MARKERS = ("example", "placeholder", "changeme", "your-", "your_", "xxxxx", "redacted")
+_SECRET_SCAN_SUFFIXES = {".md", ".txt", ".log", ".json", ".jsonl", ".yaml", ".yml"}
+_SECRET_SCAN_MAX_BYTES = 1_000_000
+_SECRET_SCAN_MAX_FILES = 500
+_SECRET_SCAN_MAX_REPORTED = 20
+
+
+def _looks_like_placeholder(value: str) -> bool:
+    """True for template/placeholder values (`<...>`, `${...}`, `your-key-here`, `********`)."""
+    lowered = value.lower()
+    return (value.startswith(("<", "$", "{")) or len(set(value)) <= 2
+            or any(marker in lowered for marker in _PLACEHOLDER_MARKERS))
+
+
+def _scan_line_for_secret(line: str) -> tuple[str, str] | None:
+    """(label, mask) when *line* carries a high-confidence secret shape, else None.
+
+    The mask is the secret's first 4 characters plus an ellipsis — enough to
+    recognise which credential leaked, never enough to use it.
+    """
+    for label, pattern in _SECRET_FORMAT_PATTERNS:
+        match = pattern.search(line)
+        if match:
+            return label, match.group(0)[:4] + "…"
+    match = _SECRET_ASSIGNMENT_RE.match(line)
+    if match and any(marker in match.group(1).upper() for marker in _SECRET_NAME_MARKERS):
+        value = match.group(2)
+        if not _looks_like_placeholder(value):
+            return "credential assignment", value[:4] + "…"
+    return None
+
+
+def _scan_text_for_secrets(text: str) -> list[tuple[int, str, str]]:
+    """(line number, label, mask) for every suspected secret in *text* — one per line at most."""
+    hits = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        found = _scan_line_for_secret(line)
+        if found:
+            hits.append((lineno, found[0], found[1]))
+    return hits
+
+
+@doctor_check()
+def _check_secret_exposure(should_fix: bool, f: Finding) -> None:
+    """Suspected secrets sitting in memories/ or logs/ — places secrets never belong.
+
+    Report-only by design (should_fix is accepted but never used): doctor does
+    not edit memory or log content, and the remedy for a real hit starts with
+    rotating the credential, not deleting the line.
+    """
+    from hermes_cli.doctor import HERMES_HOME
+
+    roots = [HERMES_HOME / name for name in ("memories", "logs")]
+    existing = [root for root in roots if root.is_dir()]
+    if not existing:
+        check_info("No memories/ or logs/ directory to scan for suspected secrets")
+        return
+    hits: list[tuple[str, int, str, str]] = []
+    scanned = 0
+    for root in existing:
+        for path in sorted(root.rglob("*")):
+            if scanned >= _SECRET_SCAN_MAX_FILES:
+                break
+            if (not path.is_file() or path.suffix.lower() not in _SECRET_SCAN_SUFFIXES
+                    or ".git" in path.parts or path.name == ".env"):
+                continue
+            try:
+                if path.stat().st_size > _SECRET_SCAN_MAX_BYTES:
+                    continue
+                text = path.read_bytes()[:_SECRET_SCAN_MAX_BYTES].decode("utf-8", "replace")
+            except OSError:
+                continue
+            scanned += 1
+            rel = path.relative_to(HERMES_HOME).as_posix()
+            hits.extend((rel, lineno, label, mask) for lineno, label, mask in _scan_text_for_secrets(text))
+    if not hits:
+        check_ok("No suspected secrets in memories/ or logs/")
+        return
+    for rel, lineno, label, mask in hits[:_SECRET_SCAN_MAX_REPORTED]:
+        check_warn(f"Possible secret in {rel}:{lineno}", f"({label}; starts {mask})")
+    if len(hits) > _SECRET_SCAN_MAX_REPORTED:
+        check_info(f"… and {len(hits) - _SECRET_SCAN_MAX_REPORTED} more suspected secret(s) not shown")
+    f.manual_issues.append(
+        "Review the suspected secrets above: rotate any real credential first, "
+        "then remove it from memories/logs (doctor never deletes content)")
 
 
 @doctor_check("")  # best-effort: profile enumeration must never break doctor

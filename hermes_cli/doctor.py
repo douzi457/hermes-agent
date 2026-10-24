@@ -29,6 +29,7 @@ from hermes_cli.doctor_config import (
     _check_config_drift,
     _check_config_file,
     _check_env_file,
+    _check_env_permissions,
     _check_mcp_security,
     _check_relay_plugins,
     _check_xai_retirement,
@@ -59,6 +60,7 @@ from hermes_cli.doctor_state import (
     _check_memory_health,
     _check_memory_provider,
     _check_profiles,
+    _check_secret_exposure,
     _check_skills_hub,
     _check_state_db,
 )
@@ -145,6 +147,7 @@ DOCTOR_CHECKS = (
     ('Required Packages', _check_required_packages), ('Machine Profile', _check_machine_profile),
     (None, _check_web_dashboard_import),
     ('Configuration Files', _check_env_file),
+    (None, _check_env_permissions),
     (None, _check_config_file), (None, _check_config_drift),
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
     ('Session Reset (timers removed Sep 7, 2026)', _check_retired_session_reset),
@@ -157,6 +160,7 @@ DOCTOR_CHECKS = (
     (None, _check_npm_audit), ('API Connectivity', _check_api_connectivity),
     ('Tool Availability', _check_tool_availability), ('Skills Hub', _check_skills_hub),
     ('Memory Provider', _check_memory_provider), (None, _check_memory_health),
+    (None, _check_secret_exposure),
     ('NeMo Relay Plugins', _check_relay_plugins),
     (None, _check_profiles),
 )

@@ -13,6 +13,9 @@ services:
     # build: .
     command: ["hermes", "gateway", "run", "--replace"]
     restart: unless-stopped        # D1 常驻的根：容器退出自动拉起
+    # 非 root：镜像默认以 root 运行；部署时启用下面一行给 gateway 一个专用
+    # uid，并把 hermes-home 卷的属主 chown 给该 uid，不要长期以 root 跑。
+    # user: "1000:1000"
     environment:
       - HERMES_HOME=/root/.hermes  # 与下面 volume 的容器内路径保持一致
     volumes:

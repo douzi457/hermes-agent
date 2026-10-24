@@ -682,6 +682,65 @@ def _check_machine_profile(should_fix: bool, f: Finding) -> None:
                    t("doctor.check.machine.low_disk_detail"))
 
 
+def _gateway_process_owner(pid: int) -> tuple[str, bool] | None:
+    """(owner, runs-with-full-privileges) for a live gateway pid, else None.
+
+    The pid is only trusted after its command line still matches the canonical
+    gateway matcher — a recycled pid must not yield a confident claim about the
+    gateway's privileges. Sources: /proc stat on Linux, psutil elsewhere (an
+    optional import in the gateway stack, so its absence just means
+    "unknown"). Any doubt resolves to None, never to a guessed verdict.
+    """
+    from gateway.status import _read_process_cmdline, looks_like_gateway_command_line
+
+    cmdline = _read_process_cmdline(pid)
+    if not cmdline or not looks_like_gateway_command_line(cmdline):
+        return None
+    if sys.platform.startswith("linux"):
+        try:
+            import pwd
+
+            uid = os.stat(f"/proc/{pid}").st_uid
+            return pwd.getpwuid(uid).pw_name, uid == 0
+        except (OSError, KeyError):
+            return None
+    try:
+        import psutil
+
+        proc = psutil.Process(pid)
+        owner = proc.username()
+        if not owner:
+            return None
+        if sys.platform == "win32":
+            tail = owner.replace("/", "\\").rsplit("\\", 1)[-1].lower()
+            return owner, tail in {"administrator", "system"}
+        return owner, proc.uids().real == 0
+    except Exception:
+        return None
+
+
+def _report_gateway_privilege(snapshot, f: Finding) -> None:
+    """Privilege context for a running gateway: root/Administrator deserves a warning.
+
+    Best-effort by construction — when the owner cannot be resolved reliably
+    the only output is one generic hardening tip, never a guessed verdict.
+    """
+    resolved = _gateway_process_owner(snapshot.gateway_pids[0]) if snapshot.gateway_pids else None
+    if resolved is None:
+        check_info("Gateway privilege level could not be verified"
+                   " — a dedicated low-privilege account is safer than root/Administrator")
+        return
+    owner, privileged = resolved
+    if privileged:
+        check_warn("Gateway runs with full privileges",
+                   f"(owner: {owner} — a dedicated low-privilege service account is safer)")
+        f.manual_issues.append(
+            "Run the gateway under a dedicated low-privilege account instead of "
+            "root/Administrator (see deploy-pack/duty/gateway-service/)")
+    else:
+        check_info(f"Gateway runs as {owner} (not root/Administrator)")
+
+
 @doctor_check()
 def _check_gateway_residency(should_fix: bool, f: Finding) -> None:
     """Resident gateway: cron and duty jobs only fire while a gateway process lives.
@@ -702,6 +761,7 @@ def _check_gateway_residency(should_fix: bool, f: Finding) -> None:
                 snapshot.manager == "manual process" or snapshot.manager.startswith("Termux")):
             check_warn(t("doctor.check.gateway.manual_process"),
                        t("doctor.check.gateway.manual_process_detail"))
+        _report_gateway_privilege(snapshot, f)
         return
     if snapshot.service_installed:
         check_warn(t("doctor.check.gateway.installed_not_running"),
