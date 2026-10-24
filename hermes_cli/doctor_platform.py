@@ -9,6 +9,7 @@ import ssl
 import subprocess
 import sys
 from pathlib import Path
+from agent.i18n import t
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import is_nix_install_method, recommended_update_command_for_method
 from hermes_cli.doctor_report import (
@@ -189,7 +190,7 @@ def _check_s6_supervision(issues: list[str]) -> None:
         return
     if detect_service_manager() != "s6":
         return
-    _section("s6 Supervision")
+    _section(t("doctor.section.s6_supervision"))
     mgr = S6ServiceManager()
     for static in ("main-hermes", "dashboard"):  # s6-rc symlinks under /run/service/, same s6-svstat probe
         up = mgr.is_running(static)
@@ -270,7 +271,7 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
     host_unit = user_systemd_unit_dir() / f"{_SERVICE_BASE}.service"
     if not (get_systemd_unit_path().exists() or host_unit.exists()):
         return
-    _section("Gateway Service")
+    _section(t("doctor.section.gateway_service"))
     linger_enabled, linger_detail = get_systemd_linger_status()
     if linger_enabled is None:
         return check_warn("Could not verify systemd linger", f"({linger_detail})")
@@ -508,7 +509,7 @@ def _check_windows_gateway_autostart(should_fix: bool, f: Finding) -> None:
     redundant = gateway_windows.redundant_autostart_entries()
     if not redundant:
         return
-    _section("Windows Gateway Autostart")
+    _section(t("doctor.section.windows_autostart"))
     if not should_fix:
         for path in redundant:
             check_warn("Redundant gateway login item", f"({path})")
@@ -590,7 +591,7 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
     from hermes_cli.doctor import PROJECT_ROOT
     if sys.platform == "win32":
         return
-    _section("Command Installation")
+    _section(t("doctor.section.command_installation"))
     from hermes_cli.config import detect_install_method
 
     method = detect_install_method(PROJECT_ROOT)
@@ -666,18 +667,19 @@ def _check_machine_profile(should_fix: bool, f: Finding) -> None:
     profile = load_machine_profile()
     if not profile.get("tier"):
         if not should_fix:
-            check_warn("Machine profile not probed yet", "(run 'hermes doctor --fix' to probe and record it)")
+            check_warn(t("doctor.check.machine.not_probed"), t("doctor.check.machine.not_probed_detail"))
             return
         result = run_machine_probe()
         profile = result["profile"]
         f.fixed += 1
-        check_ok(f"Machine profile probed: {profile['summary']}")
+        check_ok(t("doctor.check.machine.probed", summary=profile['summary']))
     else:
-        check_ok(profile.get("summary") or f"Machine tier {profile['tier']}",
-                 f"(probed {profile.get('probed_at') or 'unknown date'})")
+        check_ok(profile.get("summary") or t("doctor.check.machine.tier", tier=profile['tier']),
+                 t("doctor.check.machine.probed_detail",
+                   date=profile.get('probed_at') or t("doctor.check.machine.date_unknown")))
     if profile.get("disk_free_gb") is not None and profile["disk_free_gb"] < 5:
-        check_warn(f"Disk free is low: {profile['disk_free_gb']}G on the HERMES_HOME volume",
-                   "(dependencies and caches need room)")
+        check_warn(t("doctor.check.machine.low_disk", gb=profile['disk_free_gb']),
+                   t("doctor.check.machine.low_disk_detail"))
 
 
 @doctor_check()
@@ -695,17 +697,17 @@ def _check_gateway_residency(should_fix: bool, f: Finding) -> None:
         detail = f"({snapshot.manager}"
         if snapshot.gateway_pids:
             detail += f", PID {', '.join(str(pid) for pid in snapshot.gateway_pids)}"
-        check_ok("Gateway is running", detail + ")")
+        check_ok(t("doctor.check.gateway.running"), detail + ")")
         if not snapshot.service_installed and (
                 snapshot.manager == "manual process" or snapshot.manager.startswith("Termux")):
-            check_warn("Gateway runs as a manual process, not an installed service",
-                       "(it stops with the session — 'hermes gateway install' makes it resident)")
+            check_warn(t("doctor.check.gateway.manual_process"),
+                       t("doctor.check.gateway.manual_process_detail"))
         return
     if snapshot.service_installed:
-        check_warn("Gateway service is installed but not running",
-                   f"({snapshot.manager} — start it with 'hermes gateway start')")
-        f.manual_issues.append("Start the gateway service: hermes gateway start")
+        check_warn(t("doctor.check.gateway.installed_not_running"),
+                   t("doctor.check.gateway.installed_not_running_detail", manager=snapshot.manager))
+        f.manual_issues.append(t("doctor.check.gateway.start_issue"))
         return
-    check_warn("Gateway is not resident",
-               "(no service installed and no gateway process — scheduled jobs cannot fire)")
-    f.manual_issues.append("Install the resident gateway service: hermes gateway install")
+    check_warn(t("doctor.check.gateway.not_resident"),
+               t("doctor.check.gateway.not_resident_detail"))
+    f.manual_issues.append(t("doctor.check.gateway.install_issue"))

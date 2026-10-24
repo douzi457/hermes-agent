@@ -6,6 +6,7 @@ import functools
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
+from agent.i18n import t
 from hermes_cli.colors import Colors, color
 
 
@@ -94,4 +95,4 @@ def ensure_dir(f: Finding, should_fix: bool, path, exists_msg: str, created_msg:
         check_ok(created_msg)
         f.fixed += 1
     else:
-        check_warn(missing_msg, "(will be created on first use)")
+        check_warn(missing_msg, t("doctor.report.will_be_created"))
