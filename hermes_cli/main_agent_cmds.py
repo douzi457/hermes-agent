@@ -57,10 +57,27 @@ def _cmd_memory_reset(args):
     print(f"  Files were in: {display_hermes_home()}/memories/\n")
 
 
+def _cmd_memory_candidates(args):
+    """Read-only candidate-pair report for the consolidation job / manual review.
+    The framework only REPORTS pairs; merging follows the consolidation
+    protocol (deploy-pack/memory/consolidate-protocol.md), never this command."""
+    from hermes_constants import get_hermes_home
+    from tools.memory_similarity import consolidation_candidate_report, render_candidates_markdown
+    from tools.memory_tool import get_builtin_memory_similarity_settings
+
+    threshold = getattr(args, "threshold", None)
+    if threshold is None:
+        threshold = get_builtin_memory_similarity_settings()["similarity_threshold"]
+    report = consolidation_candidate_report(get_hermes_home() / "memories", float(threshold))
+    print(render_candidates_markdown(report, float(threshold)))
+
+
 def cmd_memory(args):
     sub = getattr(args, "memory_command", None)
     if sub == "off":
         _cmd_memory_off()
+    elif sub == "candidates":
+        _cmd_memory_candidates(args)
     elif sub == "reset":
         _cmd_memory_reset(args)
     else:

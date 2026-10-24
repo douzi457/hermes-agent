@@ -25,6 +25,12 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
         help="Provider to configure directly (e.g. honcho), skipping the picker")
     memory_sub.add_parser("status", help="Show current memory provider config")
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")
+    _candidates_parser = memory_sub.add_parser(
+        "candidates",
+        help="List built-in memory duplicate/contradiction candidate pairs (read-only; never merges)")
+    _candidates_parser.add_argument(
+        "--threshold", type=float, default=None,
+        help="Bigram similarity threshold (default: memory.similarity_threshold config)")
     _reset_parser = memory_sub.add_parser(
         "reset", help="Erase all built-in memory (MEMORY.md and USER.md)")
     add_yes_flag(_reset_parser)

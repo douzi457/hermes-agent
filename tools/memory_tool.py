@@ -41,8 +41,35 @@ def get_memory_dir() -> Path:
 
 
 from tools.memory_tool_store import (
-    DEFAULT_MEMORY_CHAR_LIMIT, DEFAULT_USER_CHAR_LIMIT,
+    DEFAULT_MEMORY_CHAR_LIMIT, DEFAULT_RELEVANCE_RANKED_INJECTION, DEFAULT_SIMILARITY_THRESHOLD,
+    DEFAULT_USER_CHAR_LIMIT, DEFAULT_WRITE_SIMILARITY_THRESHOLD, DEFAULT_WRITE_SIMILARITY_WARNING,
     ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, PATCH_DROP_HINT, MemoryStore, _scan_memory_content)
+
+
+def _clamped_threshold(section: dict[str, Any], key: str, default: float) -> float:
+    try:
+        return min(1.0, max(0.0, float(section.get(key, default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def get_builtin_memory_similarity_settings(config: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Coerced semantic-memory settings from the ``memory`` config section:
+    ``similarity_threshold`` and ``write_similarity_threshold`` (floats clamped
+    to [0, 1]), ``write_similarity_warning`` and ``relevance_ranked_injection``
+    (bools). Malformed values fall back to the shipped defaults. ``agent_init``
+    and ``load_on_disk_store`` both build stores through here so the live and
+    on-disk stores cannot diverge."""
+    section = get_builtin_memory_config(config)
+    return {
+        "similarity_threshold": _clamped_threshold(
+            section, "similarity_threshold", DEFAULT_SIMILARITY_THRESHOLD),
+        "write_similarity_threshold": _clamped_threshold(
+            section, "write_similarity_threshold", DEFAULT_WRITE_SIMILARITY_THRESHOLD),
+        "write_similarity_warning": is_truthy_value(
+            section.get("write_similarity_warning"), default=DEFAULT_WRITE_SIMILARITY_WARNING),
+        "relevance_ranked_injection": is_truthy_value(
+            section.get("relevance_ranked_injection"), default=DEFAULT_RELEVANCE_RANKED_INJECTION)}
 
 
 def load_on_disk_store() -> MemoryStore:
@@ -56,7 +83,8 @@ def load_on_disk_store() -> MemoryStore:
         memory_enabled, user_profile_enabled = get_builtin_memory_store_flags(config)
         store = MemoryStore(int(mem_cfg.get("memory_char_limit", DEFAULT_MEMORY_CHAR_LIMIT)),
                             int(mem_cfg.get("user_char_limit", DEFAULT_USER_CHAR_LIMIT)),
-                            memory_enabled=memory_enabled, user_profile_enabled=user_profile_enabled)
+                            memory_enabled=memory_enabled, user_profile_enabled=user_profile_enabled,
+                            **get_builtin_memory_similarity_settings(config))
     except Exception:
         store = MemoryStore()  # config optional — fall back to defaults rather than break /memory
     store.load_from_disk()
