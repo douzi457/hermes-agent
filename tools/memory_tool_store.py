@@ -25,6 +25,23 @@ logger = logging.getLogger("tools.memory_tool")
 # enforce the shipped limits, not a stale second copy of them.
 DEFAULT_MEMORY_CHAR_LIMIT = _DEFAULT_CONFIG["memory"]["memory_char_limit"]
 DEFAULT_USER_CHAR_LIMIT = _DEFAULT_CONFIG["memory"]["user_char_limit"]
+# Same single-source rule for the semantic-memory settings (fork batch):
+# fallbacks come from DEFAULT_CONFIG["memory"], never a restated literal.
+DEFAULT_SIMILARITY_THRESHOLD = _DEFAULT_CONFIG["memory"]["similarity_threshold"]
+DEFAULT_WRITE_SIMILARITY_THRESHOLD = _DEFAULT_CONFIG["memory"]["write_similarity_threshold"]
+DEFAULT_WRITE_SIMILARITY_WARNING = _DEFAULT_CONFIG["memory"]["write_similarity_warning"]
+DEFAULT_RELEVANCE_RANKED_INJECTION = _DEFAULT_CONFIG["memory"]["relevance_ranked_injection"]
+
+from tools.memory_similarity import comparison_length as _comparison_length
+from tools.memory_similarity import similar_entries as _similar_entries
+from tools.memory_similarity import similarity as _text_similarity
+
+# Below this comparison length a bigram score is noise, not signal: a 4-char
+# entry has 3 bigrams, so a one-character factual difference （用户姓王 vs
+# 用户姓李） still scores 0.50. The write-time advisory stays silent for such
+# entries; the consolidation candidates keep their own unguarded 0.6 口径
+# (same numbers as the deploy-pack health check).
+_MIN_ADVISORY_COMPARISON_CHARS = 6
 
 # Block header prefixes rendered by _render_block; agent/conversation_compression.py
 # matches them to detect a leftover block for an emptied target — keep in lockstep.
@@ -194,11 +211,19 @@ class MemoryStore:
 
     def __init__(self, memory_char_limit: int = DEFAULT_MEMORY_CHAR_LIMIT,
                  user_char_limit: int = DEFAULT_USER_CHAR_LIMIT, *,
-                 memory_enabled: bool = True, user_profile_enabled: bool = True):
+                 memory_enabled: bool = True, user_profile_enabled: bool = True,
+                 similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+                 write_similarity_threshold: float = DEFAULT_WRITE_SIMILARITY_THRESHOLD,
+                 write_similarity_warning: bool = DEFAULT_WRITE_SIMILARITY_WARNING,
+                 relevance_ranked_injection: bool = DEFAULT_RELEVANCE_RANKED_INJECTION):
         self.memory_entries: list[str] = []
         self.user_entries: list[str] = []
         self.memory_char_limit, self.user_char_limit = memory_char_limit, user_char_limit
         self.memory_enabled, self.user_profile_enabled = memory_enabled, user_profile_enabled
+        self.similarity_threshold = similarity_threshold
+        self.write_similarity_threshold = write_similarity_threshold
+        self.write_similarity_warning = write_similarity_warning
+        self.relevance_ranked_injection = relevance_ranked_injection
         self._system_prompt_snapshot: dict[str, str] = {"memory": "", "user": ""}
         self._consolidation_failures = 0  # per turn; reset by reset_consolidation_failures()
 
@@ -228,11 +253,17 @@ class MemoryStore:
             "memory calls — leave memory unchanged for now and continue with your reply to the user. "
             "The fact can be saved in a later turn.")}
 
-    def load_from_disk(self):
+    def load_from_disk(self, query_context: Optional[str] = None):
         """Load MEMORY.md / USER.md and capture the frozen system-prompt snapshot.
         Threat hits are replaced by a ``[BLOCKED: …]`` placeholder in the SNAPSHOT only;
         live lists keep the raw text so the user can see and remove poisoned entries
-        (dropping them silently would hide the attack)."""
+        (dropping them silently would hide the attack).
+
+        *query_context* is the relevance signal for the over-limit snapshot
+        selection (``_render_snapshot``). Session start has no conversational
+        signal yet — every current caller passes nothing — so ranking degrades
+        to newest-first; the parameter is the seam for a caller that rebuilds
+        a snapshot with a topic in hand."""
         from tools.threat_patterns import scan_for_threats
 
         def _sanitize(entry, filename):
@@ -260,7 +291,8 @@ class MemoryStore:
                 logger.warning("%s exceeds its char limit on load: %d/%d chars. Entries stay loaded; "
                                "further additions are blocked until it is back under the limit.",
                                path.name, count, limit)
-            self._system_prompt_snapshot[target] = self._render_block(target, [_sanitize(e, path.name) for e in entries])
+            self._system_prompt_snapshot[target] = self._render_snapshot(
+                target, [_sanitize(e, path.name) for e in entries], query_context)
 
     @staticmethod
     @contextmanager
@@ -376,6 +408,31 @@ class MemoryStore:
             extra_fields = result[2] if len(result) > 2 else {}
             return self._success_response(target, result[1], **extra_fields)
 
+    def _similarity_advisory(self, content: str, entries: list[str]) -> Optional[dict[str, Any]]:
+        """Non-blocking duplicate advisory payload for a NEW entry, or None.
+
+        Advisory only — the write has already been accepted; the payload names
+        the existing entries the new one resembles (bigram similarity >= the
+        write threshold, which is lower than the consolidation-candidate
+        threshold: a false alarm costs one ignorable line, a miss lets
+        contradicting entries stack up silently) so the agent can supersede
+        the old entry (patch/remove) instead of leaving two near-copies to
+        contradict each other in a future prompt."""
+        if not self.write_similarity_warning:
+            return None
+        if _comparison_length(content) < _MIN_ADVISORY_COMPARISON_CHARS:
+            return None
+        hits = _similar_entries(content, entries, self.write_similarity_threshold)
+        if not hits:
+            return None
+        return {
+            "message": (
+                "Advisory (the write succeeded): this entry is highly similar to existing "
+                "entr(ies) below. If it supersedes one of them, patch or remove the old entry "
+                "instead of keeping both — near-duplicates drift into contradictions."),
+            "similar_entries": [{"entry": entries[i], "similarity": round(score, 2)}
+                                for i, score in hits]}
+
     def add(self, target: str, content: str) -> dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
@@ -394,6 +451,8 @@ class MemoryStore:
                     f"would exceed the limit by {new_total - limit:,} chars. Retry as ONE 'operations' batch that "
                     f"removes or shortens (patch) stale entries from current_entries below to free at least "
                     f"{new_total - limit:,} chars AND adds this entry — the limit is checked only on the batch result."))
+            if advisory := self._similarity_advisory(content, entries):
+                return entries + [content], "Entry added.", {"similarity_warning": advisory}
             return entries + [content], "Entry added."
         # Append-only: skip the drift guard (appending never clobbers foreign
         # content) but still refuse a failed read — add rewrites the WHOLE file.
@@ -622,6 +681,22 @@ class MemoryStore:
                 replaced_fields["patched_entries_after"] = produced
             if removed:
                 replaced_fields["removed_entries"] = removed
+            # Write-time duplicate advisory for genuinely-new adds, judged against
+            # the FINAL state (an entry this same batch removed cannot trigger a
+            # stale warning). Advisory only — the batch already succeeded.
+            if self.write_similarity_warning:
+                warnings = []
+                for op in ops:
+                    if op.get("action") != "add":
+                        continue
+                    new_content = (op.get("content") or op.get("new_text") or "").strip()
+                    if not new_content or new_content in entries:
+                        continue
+                    others = [e for e in working if e != new_content]
+                    if advisory := self._similarity_advisory(new_content, others):
+                        warnings.append({"content": new_content, **advisory})
+                if warnings:
+                    replaced_fields["similarity_warnings"] = warnings
             return working, f"Applied {len(operations)} operation(s).", replaced_fields
         return self._mutate(target, _apply, skip_drift=not commit)
 
@@ -652,6 +727,58 @@ class MemoryStore:
         content, sep = ENTRY_DELIMITER.join(entries), "═" * 46
         title = MEMORY_BLOCK_HEADERS["user" if target == "user" else "memory"]
         return f"{sep}\n{title} [{self._usage_pct(target, len(content))}]\n{sep}\n{content}"
+
+    def _select_entries_for_injection(self, entries: list[str], limit: int,
+                                      query_context: Optional[str]) -> tuple[list[str], int]:
+        """``(selected entries in rank order, omitted count)`` for an over-limit store.
+
+        Rank: similarity to *query_context* when a caller supplied one (ties and
+        the no-context case fall back to newest-first — file order is append
+        order, so the newest entry is last). Selection is greedy by rank under
+        the SAME joined-char measure writes enforce; an entry that does not fit
+        is skipped, not fatal, so smaller lower-ranked entries can still fit.
+        If nothing fits (a single entry larger than the whole budget), the
+        top-ranked entry is injected anyway — never worse than the legacy
+        inject-everything behaviour for that entry."""
+        if query_context:
+            scored = sorted(range(len(entries)),
+                            key=lambda i: (-_text_similarity(query_context, entries[i]), -i))
+        else:
+            scored = list(range(len(entries) - 1, -1, -1))
+        selected: list[str] = []
+        total = 0
+        for i in scored:
+            extra = len(entries[i]) + (len(ENTRY_DELIMITER) if selected else 0)
+            if total + extra <= limit:
+                selected.append(entries[i])
+                total += extra
+        if not selected and scored:
+            selected = [entries[scored[0]]]
+        return selected, len(entries) - len(selected)
+
+    def _render_snapshot(self, target: str, entries: list[str],
+                         query_context: Optional[str] = None) -> str:
+        """Snapshot block for *target*. When everything fits (the normal case —
+        writes enforce the limit), this is ``_render_block`` byte-for-byte.
+        Only an over-limit store (external edits can exceed the cap; writes
+        cannot) with relevance ranked injection enabled takes the selection
+        path: the most relevant entries that fit, in rank order, with a note
+        stating how many were omitted. The on-disk store is never touched —
+        omitted entries stay in the file for consolidation."""
+        if not entries:
+            return ""
+        if (not self.relevance_ranked_injection
+                or len(ENTRY_DELIMITER.join(entries)) <= self._char_limit(target)):
+            return self._render_block(target, entries)
+        selected, omitted = self._select_entries_for_injection(
+            entries, self._char_limit(target), query_context)
+        block = self._render_block(target, selected)
+        if not block:
+            return self._render_block(target, entries)
+        return (f"{block}\n[Memory note: {omitted} of {len(entries)} entries omitted to fit "
+                f"the {self._char_limit(target):,}-char budget (most relevant shown first; "
+                f"omitted entries remain on disk — consolidate memory to bring the store "
+                f"back under its limit).]")
 
     @staticmethod
     def _read_raw_checked(path: Path) -> tuple[str, bool]:

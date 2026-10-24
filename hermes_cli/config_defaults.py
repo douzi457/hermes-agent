@@ -1330,6 +1330,27 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         "memory_char_limit": 4400,   # fork default (upstream: 2200): ~1600 tokens at 2.75 chars/token for Latin text; CJK runs ~1 char/token, so this is ~4400 tokens of Chinese — sized for CJK-first users
         "user_char_limit": 2200,     # fork default (upstream: 1375): ~800 tokens at 2.75 chars/token; ~2200 tokens for CJK
+        # Character-bigram Jaccard similarity (tools/memory_similarity.py — lexical,
+        # not semantic) for the consolidation candidate report
+        # (`hermes memory candidates`) and the deploy-pack health check. 0.6: err
+        # toward reporting candidates; the consolidation protocol, not the
+        # score, decides merges.
+        "similarity_threshold": 0.6,
+        # The write-time advisory has its OWN lower bar: it never blocks a
+        # write, so a false positive costs one ignorable line, while a miss
+        # lets contradictory entries stack up silently. Measured near-
+        # restatements score ~0.48–0.55 — below the candidate bar — so the
+        # advisory threshold sits at 0.45 to catch them.
+        "write_similarity_threshold": 0.45,
+        # Advisory only: an `add` whose text scores >= write_similarity_threshold
+        # against an existing entry succeeds but names the similar entry, so the
+        # agent supersedes instead of stacking a contradictory second copy.
+        "write_similarity_warning": True,
+        # When a store's entries exceed its char limit at load (only possible via
+        # external edits — writes enforce the limit), the system-prompt snapshot
+        # injects the most relevant entries that fit and notes how many were
+        # omitted, instead of injecting everything. False = legacy inject-all.
+        "relevance_ranked_injection": True,
         # Periodic built-in memory review; 0 when an external provider auto-extracts.
         "nudge_interval": 10,
         # One external provider: bundled (retaindb, byterover) or catalog-installed (honcho,

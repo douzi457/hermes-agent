@@ -862,6 +862,10 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # true = require approval before any memory write
+  similarity_threshold: 0.6        # bigram similarity at/above which entries count as look-alikes (consolidation candidates)
+  write_similarity_threshold: 0.45 # lower bar for the write-time advisory only (it never blocks; candidates keep 0.6)
+  write_similarity_warning: true   # advisory only: a look-alike `add` succeeds but names the similar entry
+  relevance_ranked_injection: true # over-limit stores inject the most relevant entries that fit (false = inject all)
 ```
 
 With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](./features/memory.md#controlling-memory-writes-write_approval).
